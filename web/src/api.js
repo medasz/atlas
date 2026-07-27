@@ -42,5 +42,6 @@ export const api = {
     request('GET', '/api/vulns' + (asset ? '?asset=' + encodeURIComponent(asset) : '')),
   listTemplates: () => request('GET', '/api/templates'),
   addTemplate: (content) => request('POST', '/api/templates', { content }),
-  deleteTask: (id) => request('DELETE', '/api/tasks/' + encodeURIComponent(id))
+  deleteTask: (id) => request('DELETE', '/api/tasks/' + encodeURIComponent(id)),
+  extendTask: (id, reason) => request('POST', '/api/tasks/' + encodeURIComponent(id) + '/extend', { reason })
 }

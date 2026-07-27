@@ -13,6 +13,7 @@ func (s *Server) registerTasks(g *gin.RouterGroup) {
 	g.GET("/tasks", s.listTasks)
 	g.GET("/tasks/:id", s.getTask)
 	g.POST("/tasks/:id/resume", s.resumeTask)
+	g.POST("/tasks/:id/extend", s.extendTask)
 	g.DELETE("/tasks/:id", s.deleteTask)
 }
 
@@ -75,6 +76,18 @@ func (s *Server) deleteTask(c *gin.Context) {
 		return
 	}
 	if err := s.deps.Store.DeleteTask(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) extendTask(c *gin.Context) {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if err := s.deps.Store.RequestExtension(c.Request.Context(), c.Param("id"), req.Reason); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

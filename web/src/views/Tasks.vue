@@ -68,20 +68,24 @@
             <StatusTag :text="statusText(row.status)" :tone="statusTone(row.status)" dot :pulse="row.status === 1" />
           </template>
         </el-table-column>
-        <el-table-column label="" width="150" align="center">
+        <el-table-column label="ACTIONS" width="340" align="center">
           <template #default="{ row }">
             <div class="action-group">
-              <button class="action-btn" @click="view(row.id)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
-                <span>Info</span>
-              </button>
-              <button class="action-btn warn" @click="resume(row.id)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1,4 1,10 7,10"/><path d="M3.51 15a9 9 0 102.12-9.36L1 10"/></svg>
-                <span>Retry</span>
-              </button>
-              <button class="action-btn danger" @click="confirmDelete(row)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-                <span>Delete</span>
+              <button
+                v-for="act in actionsFor(row)"
+                :key="act.key"
+                class="action-btn"
+                :class="[act.tone, { 'is-loading': isBusy(row, act) }]"
+                :disabled="rowBusy(row) || isBusy(row, act)"
+                :title="act.label"
+                @click="runAction(act, row)"
+              >
+                <svg v-if="isBusy(row, act)" class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="12"/></svg>
+                <svg v-else-if="act.icon === 'eye'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg v-else-if="act.icon === 'upload'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <svg v-else-if="act.icon === 'clock'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span class="action-label">{{ act.label }}</span>
               </button>
             </div>
           </template>
@@ -156,6 +160,7 @@ import MissionProgress from '../components/MissionProgress.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import SectionLabel from '../components/SectionLabel.vue'
 import DialogHeader from '../components/DialogHeader.vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const icons = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
@@ -174,6 +179,11 @@ const delVisible = ref(false)
 const delTarget = ref('')
 const deleting = ref(false)
 let pollTimer = null
+
+// 任务状态常量（与后端 model.Task* 对齐）
+const S = { PENDING: 0, RUNNING: 1, DONE: 2 }
+// 行级操作进行中标记：key = `${act.key}:${row.id}`
+const pending = ref({})
 
 const kindOpts = [
   { label: 'ASSET SCAN', value: 'scan' },
@@ -220,11 +230,6 @@ async function view(id) {
   detailVisible.value = true
 }
 
-async function resume(id) {
-  await api.resumeTask(id)
-  await refresh()
-}
-
 function confirmDelete(row) {
   delTarget.value = row.id
   delVisible.value = true
@@ -241,6 +246,62 @@ async function doDelete() {
     await refresh()
   } finally {
     deleting.value = false
+  }
+}
+
+// 根据任务状态/进度动态返回最相关的快捷操作
+function actionsFor(row) {
+  const view = { key: 'view', label: '查看详情', icon: 'eye', tone: 'neutral' }
+  const abandon = { key: 'abandon', label: '放弃任务', icon: 'trash', tone: 'danger', confirm: true }
+  if (row.status === S.RUNNING) {
+    // 进行中：提交进度为主操作，查看详情为信息入口，申请延期为次要，放弃任务为危险项
+    return [
+      { key: 'submit', label: '提交进度', icon: 'upload', tone: 'primary', api: 'submit' },
+      view,
+      { key: 'extend', label: '申请延期', icon: 'clock', tone: 'warn', api: 'extend' },
+      abandon
+    ]
+  }
+  if (row.status === S.PENDING) {
+    return [
+      { key: 'submit', label: '提交进度', icon: 'upload', tone: 'primary', api: 'submit' },
+      view,
+      abandon
+    ]
+  }
+  // 已完成
+  return [view, abandon]
+}
+
+function actKey(act, row) { return act.key + ':' + row.id }
+function isBusy(row, act) { return !!pending.value[actKey(act, row)] }
+function rowBusy(row) {
+  const p = row.id + ':'
+  return Object.keys(pending.value).some((k) => k.startsWith(p) && pending.value[k])
+}
+
+async function runAction(act, row) {
+  if (act.confirm) { confirmDelete(row); return }
+  if (act.key === 'view') { view(row.id); return }
+  pending.value = { ...pending.value, [actKey(act, row)]: true }
+  try {
+    if (act.key === 'submit') {
+      await api.resumeTask(row.id)
+    } else if (act.key === 'extend') {
+      const { value } = await ElMessageBox.prompt(
+        '请填写延期原因（可选），提交后将通知管理员审批。',
+        '申请延期',
+        { confirmButtonText: '提交申请', cancelButtonText: '取消', inputType: 'textarea',
+          inputPlaceholder: '例如：目标较多，预计需要额外 24 小时' }
+      )
+      await api.extendTask(row.id, value || '')
+    }
+    ElMessage.success(act.label + '成功')
+    await refresh()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(act.label + '失败：' + (e.message || e))
+  } finally {
+    pending.value = { ...pending.value, [actKey(act, row)]: false }
   }
 }
 
@@ -350,22 +411,48 @@ onUnmounted(() => {
 .kind-scan { color: var(--accent-cyan); background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.15); }
 .kind-vuln { color: var(--accent-violet); background: rgba(123,97,255,0.08); border: 1px solid rgba(123,97,255,0.15); }
 
-/* 操作按钮 */
-.action-group { display: flex; gap: 6px; justify-content: center; }
+/* 操作按钮（动态状态驱动） */
+.action-group {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  justify-content: center; align-items: center;
+}
 .action-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 10px;
-  background: transparent; border: 1px solid var(--border-subtle);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 32px; padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-heading); font-size: 10px; font-weight: 600;
-  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; white-space: nowrap;
   cursor: pointer; transition: all 0.2s ease;
 }
-.action-btn svg { width: 12px; height: 12px; }
-.action-btn:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.06); }
-.action-btn.warn:hover { border-color: var(--accent-amber); color: var(--accent-amber); background: rgba(245,166,35,0.06); }
-.action-btn.danger:hover { border-color: var(--accent-red); color: var(--accent-red); background: rgba(255,82,82,0.06); }
+.action-btn svg { width: 14px; height: 14px; flex: none; }
+.action-btn .action-label { line-height: 1; }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.action-btn:not(:disabled):hover {
+  border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.06);
+}
+/* 主操作：视觉重心集中于一处（提交进度） */
+.action-btn.primary {
+  border-color: rgba(0,212,255,0.45); color: var(--accent-cyan); background: rgba(0,212,255,0.08);
+}
+.action-btn.primary:not(:disabled):hover {
+  border-color: var(--accent-cyan); background: rgba(0,212,255,0.14); box-shadow: 0 0 16px rgba(0,212,255,0.18);
+}
+.action-btn.warn { color: var(--accent-amber); border-color: rgba(245,166,35,0.3); background: rgba(245,166,35,0.05); }
+.action-btn.warn:not(:disabled):hover { border-color: var(--accent-amber); background: rgba(245,166,35,0.1); box-shadow: 0 0 16px rgba(245,166,35,0.15); }
+.action-btn.danger { color: var(--accent-red); border-color: rgba(255,71,87,0.3); background: rgba(255,71,87,0.05); }
+.action-btn.danger:not(:disabled):hover { border-color: var(--accent-red); background: rgba(255,71,87,0.1); box-shadow: 0 0 16px rgba(255,71,87,0.15); }
+
+/* 加载态 */
+.action-btn.is-loading { color: var(--text-muted); border-color: var(--border-subtle); background: transparent; box-shadow: none; }
+.action-btn .spinner { width: 14px; height: 14px; animation: spin 0.8s linear infinite; }
+
+/* 小屏：放大点按区域，防止误触 */
+@media (max-width: 640px) {
+  .action-btn { min-height: 36px; padding: 8px 14px; }
+}
 
 /* ===== 详情对话框 ===== */
 .task-dialog :deep(.el-dialog) { border: 1px solid var(--border-subtle); }
