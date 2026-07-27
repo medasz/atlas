@@ -235,7 +235,7 @@ async function openHost(ip) {
 .search-input-wrap input {
   width: 100%; padding: 11px 40px 11px 42px;
   background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(26,42,74,0.6);
   border-radius: var(--radius-md) 0 0 var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono); font-size: 13px;
@@ -253,11 +253,11 @@ async function openHost(ip) {
 .search-clear:hover { opacity: 1; color: var(--accent-red); }
 .search-clear svg { width: 16px; height: 16px; }
 
-.type-select { display: flex; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); background: var(--bg-input); }
+.type-select { display: flex; border-top: 1px solid rgba(26,42,74,0.5); border-bottom: 1px solid rgba(26,42,74,0.5); background: var(--bg-input); }
 .type-select button {
   padding: 11px 14px; background: transparent; border: none;
   color: var(--text-muted); font-family: var(--font-heading); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.08em; cursor: pointer; transition: all 0.2s ease; border-right: 1px solid var(--border-subtle);
+  letter-spacing: 0.08em; cursor: pointer; transition: all 0.2s ease; border-right: 1px solid rgba(26,42,74,0.5);
 }
 .type-select button:last-child { border-right: none; }
 .type-select button:hover { color: var(--text-primary); background: var(--bg-hover); }
@@ -267,14 +267,14 @@ async function openHost(ip) {
   display: flex; align-items: center; gap: 6px;
   padding: 11px 20px;
   background: linear-gradient(135deg, rgba(0,212,255,0.15) 0%, rgba(0,212,255,0.05) 100%);
-  border: 1px solid var(--accent-cyan); border-left: none;
+  border: 1px solid rgba(0,212,255,0.28); border-left: none;
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   color: var(--accent-cyan);
   font-family: var(--font-heading); font-size: 13px; font-weight: 600;
   letter-spacing: 0.06em; cursor: pointer; transition: all 0.25s ease; white-space: nowrap;
 }
 .search-btn svg { width: 16px; height: 16px; }
-.search-btn:hover { box-shadow: 0 0 20px rgba(0,212,255,0.18), inset 0 0 18px rgba(0,212,255,0.04); }
+.search-btn:hover { border-color: rgba(0,212,255,0.5); box-shadow: 0 0 20px rgba(0,212,255,0.18), inset 0 0 18px rgba(0,212,255,0.04); }
 .search-btn.loading svg { animation: spin 1s linear infinite; }
 
 /* ===== 语法提示 ===== */
@@ -336,6 +336,6 @@ async function openHost(ip) {
   .search-input-wrap { flex: 1 1 100%; }
   .search-input-wrap input { border-radius: var(--radius-md); }
   .type-select { flex: 1 1 100%; border-radius: 0; }
-  .search-btn { flex: 1 1 100%; border-radius: var(--radius-md); border-left: 1px solid var(--accent-cyan); }
+  .search-btn { flex: 1 1 100%; border-radius: var(--radius-md); border-left: 1px solid rgba(0,212,255,0.28); }
 }
 </style>
