@@ -1,0 +1,16 @@
+id: exposed-admin-console
+info:
+  name: "管理后台暴露"
+  severity: low
+  tags: "exposure,admin"
+requests:
+  - method: GET
+    path: "/admin"
+    matchers:
+      - type: status
+        status: 200
+      - type: word
+        words:
+          - "login"
+          - "admin"
+        condition: or

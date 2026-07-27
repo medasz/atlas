@@ -1,0 +1,11 @@
+# Atlas 自研指纹规则（热加载，修改后 POST /api/fingerprint/reload 生效）
+# 支持按响应头(header + header_re) 或响应体(body_re) 匹配
+- name: "Baota"
+  header: "Server"
+  header_re: "(?i)btpanel"
+- name: "Laravel"
+  body_re: "(?i)laravel_session"
+- name: "ThinkPHP"
+  body_re: "(?i)thinkphp|/thinkphp/"
+- name: "Spring-Boot"
+  header: "X-Application-Context"
