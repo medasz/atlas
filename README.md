@@ -1,8 +1,21 @@
 # Atlas — 互联网资产与漏洞测绘平台
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.22+">
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/docker--compose-supported-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/build-CGO_DISABLED-blue" alt="CGO disabled">
+</p>
+
+<p align="center">
+  <b>单机二进制 · 资产测绘 · 指纹识别 · 漏洞验证 · 类 FOFA Dork 检索</b>
+</p>
+
+---
+
 Atlas 是一个**单机二进制**的互联网资产测绘与漏洞检测平台：对 IP / 域名进行端口探测、服务/组件指纹识别，并将结果统一建模后持久化到 PostgreSQL、同步索引到 Elasticsearch，提供类 FOFA 的 Dork 检索语法与 Web 控制台。漏洞检测引擎仅做**验证**（发送探测请求判断是否存在），**不做任何利用**。
 
-> ⚠️ 合规要求：仅对**你拥有授权**的资产进行扫描。控制台强制展示法律横幅，使用前请确认已取得合法授权。
+> ⚠️ **合规要求**：仅对**你拥有授权**的资产进行扫描。控制台强制展示法律横幅，使用前请确认已取得合法授权。
 
 ---
 
@@ -272,7 +285,8 @@ go vet ./...
 cd web && npm install && npm run build
 ```
 
-法律与安全：本工具仅用于已授权资产的资产梳理与漏洞验证，严禁用于未授权目标。
-#   a t l a s  
- #   a t l a s  
- 
+---
+
+## 法律与安全
+
+本工具仅用于已授权资产的资产梳理与漏洞验证，**严禁用于未授权目标**。使用即表示你已获得目标资产的合法扫描授权，并自行承担由此产生的一切法律责任。
