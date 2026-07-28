@@ -10,10 +10,10 @@
           <input
             v-model="q"
             placeholder="检索语法 · ip=&quot;1.1.1.1&quot; && port=&quot;443&quot;"
-            @keyup.enter="doSearch"
+            @keyup.enter="doSearch(true)"
             autofocus
           />
-          <span v-if="q" class="search-clear" @click="q=''; doSearch()">
+          <span v-if="q" class="search-clear" @click="q=''; doSearch(true)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -45,8 +45,8 @@
     <!-- 结果 -->
     <div class="results-section">
       <div class="results-meta">
-        <span class="results-count" v-if="items.length">
-          <span class="count-num">{{ items.length }}</span> 条结果
+        <span class="results-count" v-if="total">
+          共 <span class="count-num">{{ total }}</span> 条 · 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页
         </span>
       </div>
 
@@ -79,6 +79,20 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 分页控件 -->
+      <div class="pager-wrap" v-if="total > pageSize">
+        <el-pagination
+          background
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="total"
+          :page-size="pageSize"
+          :current-page="page"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="onPageChange"
+          @size-change="onSizeChange"
+        />
+      </div>
     </div>
 
     <!-- 主机详情对话框 -->
@@ -133,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api'
 import DialogHeader from '../components/DialogHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
@@ -152,6 +166,11 @@ const hostVisible = ref(false)
 const detail = ref(null)
 const syntaxOpen = ref(false)
 
+// 分页状态
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+
 const hasDomain = computed(() => items.value.some(r => r.doc_type === 'domain'))
 
 const hostItems = computed(() => {
@@ -166,14 +185,28 @@ const hostItems = computed(() => {
   ]
 })
 
-async function doSearch() {
+// reset=true 时回到首页（检索条件变化或清空）
+async function doSearch(reset) {
+  if (reset) page.value = 1
   loading.value = true
   try {
-    const r = await api.searchAssets(q.value, '')
+    const r = await api.searchAssets(q.value, '', page.value, pageSize.value)
     items.value = r.items || []
+    total.value = r.total || 0
   } finally {
     loading.value = false
   }
+}
+
+function onPageChange(p) {
+  page.value = p
+  doSearch(false)
+}
+
+function onSizeChange(s) {
+  pageSize.value = s
+  page.value = 1
+  doSearch(false)
 }
 
 // 语法手册示例 → 填入检索框并立即检索
@@ -205,6 +238,8 @@ async function openHost(ip) {
   detail.value = r
   hostVisible.value = true
 }
+
+onMounted(() => doSearch(true))
 </script>
 
 <style scoped>
@@ -302,6 +337,46 @@ async function openHost(ip) {
 .count-num { color: var(--accent-cyan); font-size: 14px; margin-right: 2px; }
 
 .assets-table { border-radius: var(--radius-md); overflow: hidden; }
+
+/* ===== 分页控件（贴合暗色赛博主题） ===== */
+.pager-wrap {
+  display: flex; justify-content: flex-end;
+  margin-top: 16px; padding: 12px 4px;
+}
+.pager-wrap :deep(.el-pagination) {
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+}
+.pager-wrap :deep(.el-pagination__total),
+.pager-wrap :deep(.el-pagination__jump) {
+  color: var(--text-muted);
+}
+.pager-wrap :deep(.el-pagination button),
+.pager-wrap :deep(.el-pager li) {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.pager-wrap :deep(.el-pagination button:hover),
+.pager-wrap :deep(.el-pager li:hover) {
+  color: var(--accent-cyan);
+  border-color: rgba(0, 212, 255, 0.3);
+}
+.pager-wrap :deep(.el-pager li.is-active) {
+  background: linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.06));
+  color: var(--accent-cyan);
+  border-color: rgba(0,212,255,0.45);
+  box-shadow: 0 0 14px rgba(0,212,255,0.18);
+  font-weight: 600;
+}
+.pager-wrap :deep(.el-pagination .el-select .el-input__wrapper),
+.pager-wrap :deep(.el-pagination button:disabled) {
+  background: var(--bg-input);
+}
+.pager-wrap :deep(.el-pagination .el-select .el-input__inner) { color: var(--text-secondary); }
+
 .cell-target { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); }
 .cell-title { color: var(--text-secondary); }
 

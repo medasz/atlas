@@ -2,12 +2,9 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"strconv"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
-	"atlas/internal/model"
 )
 
 // ---- 查询表达式抽象语法树（参考 FOFA Dork 语法）----
@@ -22,7 +19,7 @@ type cmpNode struct {
 }
 
 type andNode struct{ l, r node }
-type orNode  struct{ l, r node }
+type orNode struct{ l, r node }
 
 // ---- 字段解析 ----
 
@@ -84,7 +81,7 @@ const (
 )
 
 type tok struct {
-	t          tokType
+	t              tokType
 	field, op, val string
 }
 
@@ -423,21 +420,43 @@ func wildPG(v string) string {
 	return v
 }
 
-// ---- 检索入口 ----
+// ---- 检索入口（含标准分页） ----
 
-// SearchAssets 资产检索：键式/表达式语法（参考 FOFA Dork），优先 ES，未配置则回退 PG
-func (s *Store) SearchAssets(ctx context.Context, q string, docType string) ([]map[string]any, error) {
-	root := parseQuery(q)
-	if s.es != nil {
-		esQuery := buildESQuery(root, docType)
-		if items, err := s.es.Search(ctx, esQuery); err == nil {
-			return items, nil
-		}
-	}
-	return s.searchAssetsPG(ctx, root, docType)
+// SearchResult 资产检索的结构化分页结果
+type SearchResult struct {
+	Total      int64            `json:"total"`       // 总记录数
+	Page       int              `json:"page"`        // 当前页码（从 1 开始）
+	PageSize   int              `json:"page_size"`   // 每页条数
+	TotalPages int              `json:"total_pages"` // 总页数
+	Items      []map[string]any `json:"items"`       // 当前页数据列表
 }
 
-func buildESQuery(root node, docType string) map[string]any {
+// assetCols host/port/domain 三表 UNION 的公共投影列（缺列补 NULL）
+const assetCols = `doc_type, ip, port, proto, name, org, os, asn, is_ipv6, banner, title, service, version, registrable_domain, server`
+
+// SearchAssets 资产检索：键式/表达式语法（参考 FOFA Dork），优先 ES，未配置则回退 PG。
+// page 从 1 开始，pageSize 为每页条数，返回带总数与总页数的标准分页信封。
+func (s *Store) SearchAssets(ctx context.Context, q, docType string, page, pageSize int) (*SearchResult, error) {
+	root := parseQuery(q)
+	if s.es != nil {
+		esQuery := buildESQuery(root, docType, (page-1)*pageSize, pageSize)
+		if items, total, err := s.es.Search(ctx, esQuery); err == nil {
+			tp := pageSize
+			if tp <= 0 {
+				tp = 20
+			}
+			totalPages := 0
+			if tp > 0 && total > 0 {
+				totalPages = int((total + int64(tp) - 1) / int64(tp))
+			}
+			return &SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Items: items}, nil
+		}
+	}
+	return s.searchAssetsPG(ctx, root, docType, page, pageSize)
+}
+
+// buildESQuery 生成 ES 查询并注入分页（from/size）
+func buildESQuery(root node, docType string, from, size int) map[string]any {
 	must := []any{}
 	if docType != "" {
 		must = append(must, map[string]any{"term": map[string]any{"doc_type": docType}})
@@ -445,89 +464,142 @@ func buildESQuery(root node, docType string) map[string]any {
 	if root != nil {
 		must = append(must, root.toES())
 	}
+	if size <= 0 {
+		size = 20
+	}
+	if from < 0 {
+		from = 0
+	}
 	if len(must) == 0 {
-		return map[string]any{"query": map[string]any{"match_all": map[string]any{}}, "size": 100}
+		return map[string]any{"query": map[string]any{"match_all": map[string]any{}}, "from": from, "size": size}
 	}
-	return map[string]any{"query": map[string]any{"bool": map[string]any{"must": must}}, "size": 100}
+	return map[string]any{"query": map[string]any{"bool": map[string]any{"must": must}}, "from": from, "size": size}
 }
 
-func (s *Store) searchAssetsPG(ctx context.Context, root node, docType string) ([]map[string]any, error) {
-	out := []map[string]any{}
-	if docType == "" || docType == "host" {
-		rows, err := s.queryHostsPG(ctx, root)
-		if err != nil {
+// scopeUnionSelect 生成单个 scope 的 SELECT，投影到 assetCols（缺列补 NULL）
+func scopeUnionSelect(scope, where string) string {
+	switch scope {
+	case "host":
+		return `SELECT 'host' doc_type, ip, NULL::int AS port, NULL::text AS proto, NULL::text AS name, org, os, asn, is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, NULL::text AS registrable_domain, NULL::text AS server FROM hosts WHERE ` + where
+	case "port":
+		return `SELECT 'port' doc_type, ip, port, proto, host AS name, NULL::text AS org, NULL::text AS os, NULL::int AS asn, NULL::bool AS is_ipv6, banner, title, service, version, NULL::text AS registrable_domain, webinfo->>'server' AS server FROM ports WHERE ` + where
+	case "domain":
+		return `SELECT 'domain' doc_type, NULL::text AS ip, NULL::int AS port, NULL::text AS proto, name, NULL::text AS org, NULL::text AS os, NULL::int AS asn, NULL::bool AS is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, registrable_domain, NULL::text AS server FROM domains WHERE ` + where
+	}
+	// 兜底（理论上不会命中）：返回空结果
+	return `SELECT 'host' doc_type, ip, NULL::int AS port, NULL::text AS proto, NULL::text AS name, org, os, asn, is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, NULL::text AS registrable_domain, NULL::text AS server FROM hosts WHERE FALSE`
+}
+
+// searchAssetsPG PG 回退：以 host/port/domain 三表 UNION 实现统一、天然去重、分页检索。
+// 指定 docType 时退化为单表查询，性能最佳。各表唯一约束保证 UNION 行天然唯一（无同 IP 多行重复）。
+func (s *Store) searchAssetsPG(ctx context.Context, root node, docType string, page, pageSize int) (*SearchResult, error) {
+	scopes := []string{"host", "port", "domain"}
+	if docType != "" {
+		scopes = []string{docType}
+	}
+
+	var wArgs []any
+	branches := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		where := "TRUE"
+		if root != nil {
+			where = root.toPG(sc, &wArgs)
+		}
+		branches = append(branches, scopeUnionSelect(sc, where))
+	}
+	union := strings.Join(branches, " UNION ALL ")
+
+	// 总数：外层 count(*) 覆盖 UNION 全部命中行
+	var acc []any
+	unionNumbered := renumber(union, wArgs, &acc)
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM (`+unionNumbered+`) sub`, acc...).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	// 分页数据：按 ip/port 稳定排序，domain 的 ip 为 NULL 排末尾
+	offset := (page - 1) * pageSize
+	dataSQL := `SELECT ` + assetCols + ` FROM (` + unionNumbered + `) sub ORDER BY ip NULLS LAST, port NULLS LAST LIMIT ? OFFSET ?`
+	dSQL := renumber(dataSQL, []any{pageSize, offset}, &acc)
+	rows, err := s.pool.Query(ctx, dSQL, acc...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]any, 0, pageSize)
+	for rows.Next() {
+		var (
+			docType string
+			ip      sql.NullString
+			port    sql.NullInt32
+			proto   sql.NullString
+			name    sql.NullString
+			org     sql.NullString
+			os      sql.NullString
+			asn     sql.NullInt32
+			isIPv6  sql.NullBool
+			banner  sql.NullString
+			title   sql.NullString
+			service sql.NullString
+			version sql.NullString
+			reg     sql.NullString
+			server  sql.NullString
+		)
+		if err := rows.Scan(&docType, &ip, &port, &proto, &name, &org, &os, &asn, &isIPv6,
+			&banner, &title, &service, &version, &reg, &server); err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var h model.Host
-			var openPorts []byte
-			if err := rows.Scan(&h.IP, &h.ASN, &h.Org, &h.OS, &openPorts); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			_ = json.Unmarshal(openPorts, &h.OpenPorts)
-			out = append(out, map[string]any{"doc_type": "host", "ip": h.IP, "org": h.Org, "os": h.OS, "open_ports": h.OpenPorts})
+		m := map[string]any{"doc_type": docType}
+		if ip.Valid {
+			m["ip"] = ip.String
 		}
-		rows.Close()
+		if port.Valid {
+			m["port"] = int(port.Int32)
+		}
+		if proto.Valid {
+			m["proto"] = proto.String
+		}
+		if name.Valid {
+			m["name"] = name.String
+		}
+		if org.Valid {
+			m["org"] = org.String
+		}
+		if os.Valid {
+			m["os"] = os.String
+		}
+		if asn.Valid {
+			m["asn"] = int(asn.Int32)
+		}
+		m["is_ipv6"] = isIPv6.Valid && isIPv6.Bool
+		if banner.Valid {
+			m["banner"] = banner.String
+		}
+		if title.Valid {
+			m["title"] = title.String
+		}
+		if service.Valid {
+			m["service"] = service.String
+		}
+		if version.Valid {
+			m["version"] = version.String
+		}
+		if reg.Valid {
+			m["registrable_domain"] = reg.String
+		}
+		if server.Valid {
+			m["server"] = server.String
+		}
+		out = append(out, m)
 	}
-	if docType == "" || docType == "port" {
-		rows, err := s.queryPortsPG(ctx, root)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var p model.Port
-			if err := rows.Scan(&p.IP, &p.Port, &p.Proto, &p.Service, &p.Version, &p.Title, &p.Banner); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out = append(out, map[string]any{"doc_type": "port", "ip": p.IP, "port": p.Port, "proto": p.Proto,
-				"service": p.Service, "version": p.Version, "title": p.Title, "banner": p.Banner})
-		}
-		rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	if docType == "" || docType == "domain" {
-		rows, err := s.queryDomainsPG(ctx, root)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var d model.Domain
-			if err := rows.Scan(&d.Name, &d.RegistrableDomain, &d.Org, &d.ASN, &d.IsIPv6); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out = append(out, map[string]any{"doc_type": "domain", "name": d.Name,
-				"registrable_domain": d.RegistrableDomain, "org": d.Org, "asn": d.ASN, "is_ipv6": d.IsIPv6})
-		}
-		rows.Close()
-	}
-	return out, nil
-}
 
-func (s *Store) queryDomainsPG(ctx context.Context, root node) (pgx.Rows, error) {
-	var acc []any
-	where := "TRUE"
-	if root != nil {
-		where = root.toPG("domain", &acc)
+	totalPages := 0
+	if pageSize > 0 && total > 0 {
+		totalPages = int((total + int64(pageSize) - 1) / int64(pageSize))
 	}
-	return s.pool.Query(ctx, `SELECT name, registrable_domain, org, asn, is_ipv6 FROM domains WHERE `+where, acc...)
-}
-
-func (s *Store) queryHostsPG(ctx context.Context, root node) (pgx.Rows, error) {
-	var acc []any
-	where := "TRUE"
-	if root != nil {
-		where = root.toPG("host", &acc)
-	}
-	return s.pool.Query(ctx, `SELECT ip, asn, org, os, open_ports FROM hosts WHERE `+where, acc...)
-}
-
-func (s *Store) queryPortsPG(ctx context.Context, root node) (pgx.Rows, error) {
-	var acc []any
-	where := "TRUE"
-	if root != nil {
-		where = root.toPG("port", &acc)
-	}
-	return s.pool.Query(ctx, `SELECT ip, port, proto, service, version, title, banner FROM ports WHERE `+where, acc...)
+	return &SearchResult{Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages, Items: out}, nil
 }

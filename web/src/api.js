@@ -23,8 +23,9 @@ async function request(method, path, body) {
 export const api = {
   login: (password) => request('POST', '/api/login', { password }),
   logout: () => request('POST', '/api/logout'),
-  searchAssets: (q, type) =>
-    request('GET', '/api/assets?q=' + encodeURIComponent(q || '') + '&type=' + (type || '')),
+  searchAssets: (q, type, page = 1, pageSize = 20) =>
+    request('GET', '/api/assets?q=' + encodeURIComponent(q || '') + '&type=' + (type || '') +
+      '&page=' + page + '&page_size=' + pageSize),
   getHost: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip)),
   getHostDetail: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/detail'),
   listTasks: () => request('GET', '/api/tasks'),

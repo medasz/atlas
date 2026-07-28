@@ -93,36 +93,39 @@ func (e *ESClient) IndexAsset(ctx context.Context, id string, doc map[string]any
 	return nil
 }
 
-// Search 执行 ES 查询，返回命中文档列表
-func (e *ESClient) Search(ctx context.Context, query map[string]any) ([]map[string]any, error) {
+// Search 执行 ES 查询，返回命中文档列表与总命中数（用于分页 total）
+func (e *ESClient) Search(ctx context.Context, query map[string]any) ([]map[string]any, int64, error) {
 	body, err := json.Marshal(query)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/%s/_search", e.addr, e.index), bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	var out struct {
 		Hits struct {
+			Total struct {
+				Value int64 `json:"value"`
+			} `json:"total"`
 			Hits []struct {
 				Source map[string]any `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	items := make([]map[string]any, 0, len(out.Hits.Hits))
 	for _, h := range out.Hits.Hits {
 		items = append(items, h.Source)
 	}
-	return items, nil
+	return items, out.Hits.Total.Value, nil
 }
