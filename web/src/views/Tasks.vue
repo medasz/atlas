@@ -162,7 +162,7 @@ import MissionProgress from '../components/MissionProgress.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import SectionLabel from '../components/SectionLabel.vue'
 import DialogHeader from '../components/DialogHeader.vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 const icons = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
@@ -256,10 +256,9 @@ function actionsFor(row) {
   const view = { key: 'view', label: '查看详情', icon: 'eye', tone: 'neutral' }
   const abandon = { key: 'abandon', label: '放弃任务', icon: 'trash', tone: 'danger', confirm: true }
   if (row.status === S.RUNNING) {
-    // 进行中：暂停为主操作，申请延期为次要，查看详情为信息入口，放弃任务为危险项
+    // 进行中：暂停为主操作，查看详情为信息入口，放弃任务为危险项
     return [
       { key: 'pause', label: '暂停', icon: 'pause', tone: 'primary', api: 'pause' },
-      { key: 'extend', label: '申请延期', icon: 'clock', tone: 'warn', api: 'extend' },
       view,
       abandon
     ]
@@ -299,14 +298,6 @@ async function runAction(act, row) {
       await api.resumeTask(row.id)
     } else if (act.key === 'pause') {
       await api.pauseTask(row.id)
-    } else if (act.key === 'extend') {
-      const { value } = await ElMessageBox.prompt(
-        '请填写延期原因（可选），提交后将通知管理员审批。',
-        '申请延期',
-        { confirmButtonText: '提交申请', cancelButtonText: '取消', inputType: 'textarea',
-          inputPlaceholder: '例如：目标较多，预计需要额外 24 小时' }
-      )
-      await api.extendTask(row.id, value || '')
     }
     ElMessage.success(act.label + '成功')
     await refresh()

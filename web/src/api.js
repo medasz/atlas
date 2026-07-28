@@ -46,5 +46,4 @@ export const api = {
   listTemplates: () => request('GET', '/api/templates'),
   addTemplate: (content) => request('POST', '/api/templates', { content }),
   deleteTask: (id) => request('DELETE', '/api/tasks/' + encodeURIComponent(id)),
-  extendTask: (id, reason) => request('POST', '/api/tasks/' + encodeURIComponent(id) + '/extend', { reason })
 }

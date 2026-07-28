@@ -460,27 +460,6 @@ func (s *Store) UpdateTaskProgress(ctx context.Context, id string, total, done i
 	return err
 }
 
-// RequestExtension 记录任务延期申请（写入 schedule.extension_requested）
-func (s *Store) RequestExtension(ctx context.Context, id, reason string) error {
-	t, err := s.GetTask(ctx, id)
-	if err != nil {
-		return err
-	}
-	if t.Schedule == nil {
-		t.Schedule = map[string]any{}
-	}
-	t.Schedule["extension_requested"] = map[string]any{
-		"reason": reason,
-		"at":     time.Now().Format(time.RFC3339),
-	}
-	sched, err := json.Marshal(t.Schedule)
-	if err != nil {
-		return err
-	}
-	_, err = s.pool.Exec(ctx, `UPDATE tasks SET schedule=$2 WHERE id=$1`, id, sched)
-	return err
-}
-
 // UpsertTaskItem 写入任务子项（冲突更新状态/结果）
 func (s *Store) UpsertTaskItem(ctx context.Context, item model.TaskItem) error {
 	res, _ := json.Marshal(item.Result)
