@@ -39,6 +39,7 @@ export const api = {
   reloadFingerprint: () => request('POST', '/api/fingerprint/reload'),
   getConfig: () => request('GET', '/api/config'),
   updateConfig: (payload) => request('PUT', '/api/config', payload),
+  getInterfaces: () => request('GET', '/api/config/interfaces'),
   listVulns: (asset) =>
     request('GET', '/api/vulns' + (asset ? '?asset=' + encodeURIComponent(asset) : '')),
   listTemplates: () => request('GET', '/api/templates'),

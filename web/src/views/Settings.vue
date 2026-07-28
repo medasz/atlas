@@ -47,8 +47,13 @@
         </label>
         <label class="field">
           <span class="field-label">抓包网卡 (RawIface)</span>
-          <input class="field-input" type="text" v-model="form.rawIface" placeholder="留空=自动选出口网卡 (如 eth0)" />
-          <span class="field-hint">raw 模式(SYN/ACK/FIN/Null/Xmas)抓包所用网卡；多网卡或容器环境建议显式指定</span>
+          <select class="field-input" v-model="form.rawIface">
+            <option value="">自动（默认，留空）</option>
+            <option v-for="i in interfaces" :key="i.name" :value="i.name">
+              {{ i.name }}{{ i.addrs && i.addrs.length ? ' (' + i.addrs[0] + ')' : '' }}
+            </option>
+          </select>
+          <span class="field-hint">raw 模式(SYN/ACK/FIN/Null/Xmas)抓包所用网卡；当前后端实例主机可用接口如下（通常选非 lo 的出口网卡）</span>
         </label>
       </div>
     </section>
@@ -106,6 +111,17 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 const lastSaved = ref('')
+const interfaces = ref([])
+
+async function loadInterfaces() {
+  try {
+    const list = await api.getInterfaces()
+    if (Array.isArray(list)) interfaces.value = list
+  } catch (e) {
+    // 静默降级：interfaces 保持为空 → 下拉仅「自动（默认）」选项，不污染 error
+    interfaces.value = []
+  }
+}
 
 async function load() {
   error.value = ''
@@ -147,7 +163,10 @@ async function save() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadInterfaces()
+})
 </script>
 
 <style scoped>

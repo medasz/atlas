@@ -2,9 +2,36 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 
 	"github.com/gin-gonic/gin"
 )
+
+// ifaceInfo 描述一个网络接口及其地址（CIDR 形式）
+type ifaceInfo struct {
+	Name  string   `json:"name"`
+	Addrs []string `json:"addrs"`
+}
+
+// listInterfaces 返回当前后端实例主机的所有网络接口，供前端下拉选择
+func (s *Server) listInterfaces(c *gin.Context) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "获取网络接口失败: " + err.Error()})
+		return
+	}
+	out := make([]ifaceInfo, 0, len(ifaces))
+	for _, itf := range ifaces {
+		addrs := []string{}
+		if as, err := itf.Addrs(); err == nil {
+			for _, a := range as {
+				addrs = append(addrs, a.String())
+			}
+		}
+		out = append(out, ifaceInfo{Name: itf.Name, Addrs: addrs})
+	}
+	c.JSON(200, out)
+}
 
 // configPayload 前端提交的可变配置项
 type configPayload struct {
@@ -13,7 +40,7 @@ type configPayload struct {
 		DefaultPortRange string `json:"default_port_range"`
 		MaxConcurrency   int    `json:"max_concurrency"`
 		PerTargetRPS     int    `json:"per_target_rps"`
-		RawIface          string `json:"raw_iface"`
+		RawIface         string `json:"raw_iface"`
 	} `json:"scan"`
 	Audit struct {
 		Enabled bool `json:"enabled"`
@@ -24,6 +51,8 @@ type configPayload struct {
 func (s *Server) registerConfig(g *gin.RouterGroup) {
 	g.GET("/config", s.getConfig)
 	g.PUT("/config", s.updateConfig)
+	// 网卡列表作为 /api/config 的子资源，完整路径 /api/config/interfaces
+	g.GET("/config/interfaces", s.listInterfaces)
 }
 
 func (s *Server) getConfig(c *gin.Context) {
