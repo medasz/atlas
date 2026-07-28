@@ -3,3 +3,4 @@
 *.log
 web/node_modules/
 web/dist/
+*.diff
