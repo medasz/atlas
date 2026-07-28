@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -135,4 +136,70 @@ func defaultConfig() *Config {
 		Audit: AuditConfig{Enabled: true},
 		Auth:  AuthConfig{Enabled: true, Password: "admin", Secret: "atlas-dev-secret-change-me"},
 	}
+}
+
+// Bootstrap 连接引导参数（来自 .env / 环境变量，不进 DB）。
+// 这些参数无法从 DB 读取（需要先连 DB），故由 .env/环境变量提供。
+type Bootstrap struct {
+	PGDSN    string
+	NATSURL  string
+	ESAddr   string
+	HTTPAddr string
+}
+
+// LoadBootstrapFrom 解析可选 .env 文件；环境变量优先，文件作兜底。
+// 解析出的连接参数仅用于引导连接与首启播种，不持久化到 DB。
+func LoadBootstrapFrom(envFile string) (*Bootstrap, error) {
+	if envFile != "" {
+		if m, err := parseEnvFile(envFile); err == nil {
+			apply := func(k, env string) {
+				if os.Getenv(env) == "" {
+					if v, ok := m[k]; ok {
+						_ = os.Setenv(env, v)
+					}
+				}
+			}
+			apply("ATLAS_PG_DSN", "ATLAS_PG_DSN")
+			apply("ATLAS_NATS_URL", "ATLAS_NATS_URL")
+			apply("ATLAS_ES_ADDR", "ATLAS_ES_ADDR")
+			apply("ATLAS_HTTP_ADDR", "ATLAS_HTTP_ADDR")
+		}
+	}
+	b := &Bootstrap{}
+	b.PGDSN = envOr("ATLAS_PG_DSN", "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable")
+	b.NATSURL = envOr("ATLAS_NATS_URL", "nats://127.0.0.1:4222")
+	b.ESAddr = envOr("ATLAS_ES_ADDR", "http://127.0.0.1:9200")
+	b.HTTPAddr = os.Getenv("ATLAS_HTTP_ADDR") // 空则后续由 DB http 段兜底
+	return b, nil
+}
+
+// LoadBootstrap 以默认查找路径调用（实际部署由 main 传 --envfile）。
+func LoadBootstrap() (*Bootstrap, error) { return LoadBootstrapFrom("") }
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// parseEnvFile 解析 KEY=VALUE 行，忽略 # 注释与空行（零依赖）。
+func parseEnvFile(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx < 0 {
+			continue
+		}
+		m[strings.TrimSpace(line[:idx])] = strings.TrimSpace(line[idx+1:])
+	}
+	return m, nil
 }
