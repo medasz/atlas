@@ -608,3 +608,13 @@ func (s *Store) ListTemplates(ctx context.Context) ([]struct {
 	}
 	return out, rows.Err()
 }
+
+// UpsertConfigSection 写入单配置段（JSON 文本），作为配置唯一 DB 写边界。
+func (s *Store) UpsertConfigSection(ctx context.Context, key, value string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO config(key,value,updated_at) VALUES($1,$2,now())
+		ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, key, value)
+	if err != nil {
+		return fmt.Errorf("upsert config %s: %w", key, err)
+	}
+	return nil
+}

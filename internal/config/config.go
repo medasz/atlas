@@ -1,141 +1,72 @@
 package config
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Config 全局配置
+// Config 全局配置（连接段由 .env/环境变量引导，业务段由 DB 动态读写）
 type Config struct {
-	HTTP     HTTPConfig     `yaml:"http"`
-	NATS     NATSConfig     `yaml:"nats"`
-	Postgres PostgresConfig `yaml:"postgres"`
-	Elastic  ElasticConfig  `yaml:"elastic"`
-	Scan     ScanConfig     `yaml:"scan"`
-	Audit    AuditConfig    `yaml:"audit"`
-	Auth     AuthConfig     `yaml:"auth"`
-
-	path string // 配置文件路径（非导出字段，不写入 YAML，仅供 Save 写回使用）
+	HTTP     HTTPConfig     `json:"http"`
+	NATS     NATSConfig     `json:"nats"`
+	Postgres PostgresConfig `json:"postgres"`
+	Elastic  ElasticConfig  `json:"elastic"`
+	Scan     ScanConfig     `json:"scan"`
+	Audit    AuditConfig    `json:"audit"`
+	Auth     AuthConfig     `json:"auth"`
 }
 
 type HTTPConfig struct {
-	Addr string `yaml:"addr"`
+	Addr string `json:"addr"`
 }
 
 type NATSConfig struct {
-	URL string `yaml:"url"`
+	URL string `json:"url"`
 }
 
 type PostgresConfig struct {
-	DSN string `yaml:"dsn"`
+	DSN string `json:"dsn"`
 }
 
 type ElasticConfig struct {
-	Addr  string `yaml:"addr"`
-	Index string `yaml:"index"`
+	Addr  string `json:"addr"`
+	Index string `json:"index"`
 }
 
 // ScanConfig 扫描默认与限速（均为手动可配置，无强制默认）
 type ScanConfig struct {
-	DefaultMode      string `yaml:"default_mode"`       // connect|syn|ack|fin|null|xmas
-	DefaultPortRange string `yaml:"default_port_range"` // top1000|list|range|1..65535
-	MaxConcurrency   int    `yaml:"max_concurrency"`    // 单实例全局最大并发（建议 500）
-	PerTargetRPS     int    `yaml:"per_target_rps"`     // 每目标请求速率（建议 10）
-	PortChunkSize    int    `yaml:"port_chunk_size"`    // 单 IP 端口切块大小，默认 1000
+	DefaultMode      string `json:"default_mode"`       // connect|syn|ack|fin|null|xmas
+	DefaultPortRange string `json:"default_port_range"` // top1000|list|range|1..65535
+	MaxConcurrency   int    `json:"max_concurrency"`    // 单实例全局最大并发（建议 500）
+	PerTargetRPS     int    `json:"per_target_rps"`     // 每目标请求速率（建议 10）
+	PortChunkSize    int    `json:"port_chunk_size"`    // 单 IP 端口切块大小，默认 1000
 
 	// raw 包扫描（SYN/ACK/FIN/Null/Xmas）相关配置
-	RawCaptureWindowSec int    `yaml:"raw_capture_window_sec"` // 抓包窗口（秒），默认 3
-	RawRetries          int    `yaml:"raw_retries"`            // 无响应重发次数，默认 1
-	RecordFilteredPorts bool   `yaml:"record_filtered_ports"`  // 是否落库 filtered（防火墙拓扑），默认 true
-	RecordClosedPorts   bool   `yaml:"record_closed_ports"`    // 是否落库 closed/timeout，默认 false（防 PG 膨胀）
-	InstallRstDrop      bool   `yaml:"install_rst_drop"`       // 是否尝试安装 RST-drop 规则（stealth），默认 true
-	RawIface            string `yaml:"raw_iface"`              // 抓包网卡（空=自动选出口，可在界面编辑）
+	RawCaptureWindowSec int    `json:"raw_capture_window_sec"` // 抓包窗口（秒），默认 3
+	RawRetries          int    `json:"raw_retries"`            // 无响应重发次数，默认 1
+	RecordFilteredPorts bool   `json:"record_filtered_ports"`  // 是否落库 filtered（防火墙拓扑），默认 true
+	RecordClosedPorts   bool   `json:"record_closed_ports"`    // 是否落库 closed/timeout，默认 false（防 PG 膨胀）
+	InstallRstDrop      bool   `json:"install_rst_drop"`       // 是否尝试安装 RST-drop 规则（stealth），默认 true
+	RawIface            string `json:"raw_iface"`              // 抓包网卡（空=自动选出口，可在界面编辑）
 }
 
 type AuditConfig struct {
-	Enabled bool `yaml:"enabled"` // 审计开关
+	Enabled bool `json:"enabled"` // 审计开关
 }
 
 // AuthConfig 访问控制（MVP 单管理员口令 + 签名会话 Cookie）
 type AuthConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Password string `yaml:"password"`
-	Secret   string `yaml:"secret"`
-}
-
-// Load 读取 YAML 配置，环境变量可覆盖关键连接项
-func Load(path string) (*Config, error) {
-	cfg := defaultConfig()
-	if path != "" {
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-		cfg.path = path
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config %s: %w", path, err)
-		}
-		if err := yaml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("parse config %s: %w", path, err)
-		}
-	}
-	if v := os.Getenv("ATLAS_PG_DSN"); v != "" {
-		cfg.Postgres.DSN = v
-	}
-	if v := os.Getenv("ATLAS_NATS_URL"); v != "" {
-		cfg.NATS.URL = v
-	}
-	if v := os.Getenv("ATLAS_ES_ADDR"); v != "" {
-		cfg.Elastic.Addr = v
-	}
-	if v := os.Getenv("ATLAS_HTTP_ADDR"); v != "" {
-		cfg.HTTP.Addr = v
-	}
-	return cfg, nil
-}
-
-// Save 将当前配置写回加载时的 YAML 文件（会保留已解析的全部字段值，
-// 但会丢失原文件中的注释）。若配置来自无文件路径的默认值则返回错误。
-func (c *Config) Save() error {
-	if c.path == "" {
-		return fmt.Errorf("配置文件路径未知，无法持久化（请通过 -config 指定文件启动）")
-	}
-	data, err := yaml.Marshal(c)
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
-	if err := os.WriteFile(c.path, data, 0644); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
-	}
-	return nil
-}
-
-func defaultConfig() *Config {
-	return &Config{
-		HTTP:     HTTPConfig{Addr: ":8080"},
-		NATS:     NATSConfig{URL: "nats://127.0.0.1:4222"},
-		Postgres: PostgresConfig{DSN: "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"},
-		Elastic:  ElasticConfig{Addr: "http://127.0.0.1:9200", Index: "assets"},
-		Scan: ScanConfig{
-			DefaultMode:         "connect",
-			DefaultPortRange:    "top1000",
-			MaxConcurrency:      500,
-			PerTargetRPS:        10,
-			PortChunkSize:       1000,
-			RawCaptureWindowSec: 3,
-			RawRetries:          1,
-			RecordFilteredPorts: true,
-			RecordClosedPorts:   false,
-			InstallRstDrop:      true,
-			RawIface:            "",
-		},
-		Audit: AuditConfig{Enabled: true},
-		Auth:  AuthConfig{Enabled: true, Password: "admin", Secret: "atlas-dev-secret-change-me"},
-	}
+	Enabled  bool   `json:"enabled"`
+	Password string `json:"password"`
+	Secret   string `json:"secret"`
 }
 
 // Bootstrap 连接引导参数（来自 .env / 环境变量，不进 DB）。
@@ -202,4 +133,138 @@ func parseEnvFile(path string) (map[string]string, error) {
 		m[strings.TrimSpace(line[:idx])] = strings.TrimSpace(line[idx+1:])
 	}
 	return m, nil
+}
+
+func defaultConfig() *Config {
+	return &Config{
+		HTTP:     HTTPConfig{Addr: ":8080"},
+		NATS:     NATSConfig{URL: "nats://127.0.0.1:4222"},
+		Postgres: PostgresConfig{DSN: "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"},
+		Elastic:  ElasticConfig{Addr: "http://127.0.0.1:9200", Index: "assets"},
+		Scan: ScanConfig{
+			DefaultMode:         "connect",
+			DefaultPortRange:    "top1000",
+			MaxConcurrency:      500,
+			PerTargetRPS:        10,
+			PortChunkSize:       1000,
+			RawCaptureWindowSec: 3,
+			RawRetries:          1,
+			RecordFilteredPorts: true,
+			RecordClosedPorts:   false,
+			InstallRstDrop:      true,
+			RawIface:            "",
+		},
+		Audit: AuditConfig{Enabled: true},
+		Auth:  AuthConfig{Enabled: true, Password: "admin", Secret: "atlas-dev-secret-change-me"},
+	}
+}
+
+// Row 是 QueryRow 返回行的最小接口（pgx.Row 天然满足）。
+type Row interface{ Scan(dest ...any) error }
+
+// DB 解耦存储层的最小接口；*pgxpool.Pool 经 PoolDB 适配后满足。
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) Row
+}
+
+// PoolDB 将 *pgxpool.Pool 适配为 config.DB（pgx.Row 已实现 Row.Scan）。
+type PoolDB struct {
+	pool *pgxpool.Pool
+}
+
+// NewPoolDB 构造 DB 适配器。
+func NewPoolDB(p *pgxpool.Pool) PoolDB { return PoolDB{pool: p} }
+
+func (p PoolDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return p.pool.Exec(ctx, sql, args...)
+}
+
+func (p PoolDB) QueryRow(ctx context.Context, sql string, args ...any) Row {
+	return p.pool.QueryRow(ctx, sql, args...)
+}
+
+const upsertConfigSQL = `INSERT INTO config(key,value,updated_at) VALUES($1,$2,now())
+	ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`
+
+// UpsertSection 将某配置段 JSON 序列化后 upsert 入库。
+func UpsertSection(ctx context.Context, db DB, key string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("序列化配置段 %s: %w", key, err)
+	}
+	if _, err := db.Exec(ctx, upsertConfigSQL, key, string(b)); err != nil {
+		return fmt.Errorf("写入配置段 %s: %w", key, err)
+	}
+	return nil
+}
+
+// EnsureSeeded 表空时按 defaultConfig 播种四段；非空则跳过。
+func EnsureSeeded(ctx context.Context, db DB) error {
+	var n int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM config").Scan(&n); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			n = 0
+		} else {
+			return fmt.Errorf("统计配置行: %w", err)
+		}
+	}
+	if n > 0 {
+		return nil
+	}
+	seed := map[string]any{
+		"scan":  defaultConfig().Scan,
+		"audit": defaultConfig().Audit,
+		"auth":  defaultConfig().Auth,
+		"http":  defaultConfig().HTTP,
+	}
+	for k, v := range seed {
+		if err := UpsertSection(ctx, db, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadFromDB 确保已播种并读四段进 *Config；连接段由 boot 填充。
+func LoadFromDB(ctx context.Context, db DB, boot *Bootstrap) (*Config, error) {
+	if err := EnsureSeeded(ctx, db); err != nil {
+		return nil, err
+	}
+	cfg := defaultConfig()
+	for _, key := range []string{"scan", "audit", "auth", "http"} {
+		row := db.QueryRow(ctx, "SELECT value FROM config WHERE key=$1", key)
+		var val string
+		if err := row.Scan(&val); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return nil, fmt.Errorf("读取配置段 %s: %w", key, err)
+		}
+		switch key {
+		case "scan":
+			if err := json.Unmarshal([]byte(val), &cfg.Scan); err != nil {
+				return nil, fmt.Errorf("解析 scan: %w", err)
+			}
+		case "audit":
+			if err := json.Unmarshal([]byte(val), &cfg.Audit); err != nil {
+				return nil, fmt.Errorf("解析 audit: %w", err)
+			}
+		case "auth":
+			if err := json.Unmarshal([]byte(val), &cfg.Auth); err != nil {
+				return nil, fmt.Errorf("解析 auth: %w", err)
+			}
+		case "http":
+			if err := json.Unmarshal([]byte(val), &cfg.HTTP); err != nil {
+				return nil, fmt.Errorf("解析 http: %w", err)
+			}
+		}
+	}
+	cfg.Postgres.DSN = boot.PGDSN
+	cfg.NATS.URL = boot.NATSURL
+	cfg.Elastic.Addr = boot.ESAddr
+	if cfg.HTTP.Addr == "" && boot.HTTPAddr != "" {
+		cfg.HTTP.Addr = boot.HTTPAddr
+	}
+	return cfg, nil
 }

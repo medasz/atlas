@@ -23,23 +23,24 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "configs/atlas.yaml", "path to config yaml")
+	envFile := flag.String("envfile", "", "path to .env file for connection bootstrap (env vars override)")
 	migrationsDir := flag.String("migrations", "migrations", "path to sql migrations dir")
 	rulesPath := flag.String("rules", "configs/fingerprint-rules.yaml", "path to fingerprint rules yaml")
 	webDir := flag.String("webdir", "", "path to built frontend (web/dist); if set, serve SPA")
 	templatesDir := flag.String("templates", "configs/templates", "path to vuln template yaml dir")
 	flag.Parse()
 
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 引导连接参数（.env / 环境变量），不进 DB
+	boot, err := config.LoadBootstrapFrom(*envFile)
+	if err != nil {
+		log.Fatalf("load bootstrap: %v", err)
+	}
+
 	// PostgreSQL
-	st, err := store.NewPostgres(ctx, cfg.Postgres.DSN)
+	st, err := store.NewPostgres(ctx, boot.PGDSN)
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
 	}
@@ -49,6 +50,12 @@ func main() {
 		log.Fatalf("migrations: %v", err)
 	}
 	log.Println("migrations applied")
+
+	// 配置从 DB 读取（首启自动播种默认值）
+	cfg, err := config.LoadFromDB(ctx, config.NewPoolDB(st.Pool()), boot)
+	if err != nil {
+		log.Fatalf("load config from db: %v", err)
+	}
 
 	// Elasticsearch 检索（连接失败则仅用 PostgreSQL，自动回退）
 	es := store.NewES(cfg.Elastic.Addr, cfg.Elastic.Index)

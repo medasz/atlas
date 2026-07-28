@@ -1,6 +1,10 @@
 package server
 
-import "github.com/gin-gonic/gin"
+import (
+	"encoding/json"
+
+	"github.com/gin-gonic/gin"
+)
 
 // configPayload 前端提交的可变配置项
 type configPayload struct {
@@ -66,10 +70,17 @@ func (s *Server) updateConfig(c *gin.Context) {
 		s.deps.Scanner.SetScanConfig(cfg.Scan)
 	}
 
-	// 持久化到 YAML；若无法持久化仍保证内存生效
-	if err := cfg.Save(); err != nil {
+	// 内存已生效（审计开关/限速/SetScanConfig 热更新见上）。
+	// 持久化到 DB；失败仅告警，不阻断内存生效。
+	ctx := c.Request.Context()
+	scanJSON, err := json.Marshal(cfg.Scan)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "序列化 scan 配置失败: " + err.Error()})
+		return
+	}
+	if err := s.deps.Store.UpsertConfigSection(ctx, "scan", string(scanJSON)); err != nil {
 		c.JSON(200, gin.H{
-			"warning": "配置已生效（运行时），但未持久化到文件: " + err.Error(),
+			"warning": "配置已生效（运行时），但未持久化到数据库: " + err.Error(),
 			"audit":   gin.H{"enabled": s.deps.Audit.Enabled()},
 			"scan": gin.H{
 				"default_mode":       cfg.Scan.DefaultMode,
@@ -79,6 +90,15 @@ func (s *Server) updateConfig(c *gin.Context) {
 				"raw_iface":          cfg.Scan.RawIface,
 			},
 		})
+		return
+	}
+	auditJSON, err := json.Marshal(cfg.Audit)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "序列化 audit 配置失败: " + err.Error()})
+		return
+	}
+	if err := s.deps.Store.UpsertConfigSection(ctx, "audit", string(auditJSON)); err != nil {
+		c.JSON(200, gin.H{"warning": "audit 配置未持久化: " + err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})

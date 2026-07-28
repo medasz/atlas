@@ -34,7 +34,7 @@ COPY --from=webbuild /web/dist /app/web/dist
 COPY configs /app/configs
 COPY migrations /app/migrations
 EXPOSE 8080
-ENTRYPOINT ["/app/atlas", "-config", "/app/configs/atlas.yaml", \
+ENTRYPOINT ["/app/atlas", \
             "-migrations", "/app/migrations", \
             "-rules", "/app/configs/fingerprint-rules.yaml", \
             "-webdir", "/app/web/dist"]
