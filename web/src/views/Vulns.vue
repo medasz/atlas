@@ -75,7 +75,7 @@
       <div class="tpl-grid" v-if="templates.length">
         <div class="tpl-card" v-for="t in templates" :key="t.id">
           <div class="tpl-top">
-            <StatusTag :text="(t.severity || '—').toUpperCase()" :tone="sevTone((t.severity || '').toLowerCase())" />
+            <StatusTag :text="sevLabel(t.severity)" :tone="sevTone((t.severity || '').toLowerCase())" />
             <span class="tpl-name">{{ t.name }}</span>
           </div>
           <div class="tpl-id">{{ t.id }}</div>
@@ -129,13 +129,13 @@ const editorErr = ref('')
 
 // level (int) → 严重等级映射
 const LEVELS = [
-  { label: 'INFO', color: '#00D4FF' },
-  { label: 'LOW', color: '#00E676' },
-  { label: 'MEDIUM', color: '#F5A623' },
-  { label: 'HIGH', color: '#FF8C42' },
-  { label: 'CRITICAL', color: '#FF4757' }
+  { label: '信息', color: '#00D4FF' },
+  { label: '低危', color: '#00E676' },
+  { label: '中危', color: '#F5A623' },
+  { label: '高危', color: '#FF8C42' },
+  { label: '严重', color: '#FF4757' }
 ]
-function levelLabel(lvl) { return (LEVELS[lvl] || { label: 'L' + lvl }).label }
+function levelLabel(lvl) { return (LEVELS[lvl] || { label: '未知' }).label }
 // 等级 → 统一配色（INFO 青 / LOW 绿 / MEDIUM 橙 / HIGH·CRITICAL 红）
 function levelTone(lvl) { return ['cyan', 'green', 'amber', 'red', 'red'][lvl] || 'muted' }
 function statusLabel(s) { return { open: '未修复', fixed: '已修复', recur: '复发' }[s] || s || '—' }
@@ -143,6 +143,10 @@ function statusTone(s) { return { open: 'red', fixed: 'green', recur: 'amber' }[
 // 模板 severity 字符串 → 配色
 function sevTone(s) {
   return { info: 'cyan', low: 'green', medium: 'amber', high: 'red', critical: 'red' }[s] || 'muted'
+}
+// 模板 severity 字符串 → 中文标签
+function sevLabel(s) {
+  return { info: '信息', low: '低危', medium: '中危', high: '高危', critical: '严重' }[s] || s || '—'
 }
 
 const levelStats = computed(() => {

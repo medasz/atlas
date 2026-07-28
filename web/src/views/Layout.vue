@@ -55,7 +55,7 @@
         </div>
         <div class="topbar-status">
           <span class="status-dot"></span>
-          <span class="status-text">SYS READY</span>
+          <span class="status-text">系统就绪</span>
         </div>
       </header>
       <main class="content-area">
@@ -104,7 +104,7 @@ const navItems = [
 const breadcrumbs = computed(() => {
   const p = route.path
   const map = { '/assets': '资产检索', '/tasks': '任务管理', '/vulns': '漏洞管理', '/blacklist': '黑名单', '/settings': '系统设置' }
-  return map[p] ? ['HOME', map[p]] : ['HOME']
+  return map[p] ? ['首页', map[p]] : ['首页']
 })
 
 function isActive(path) { return route.path === path }

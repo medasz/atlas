@@ -1,7 +1,7 @@
 <template>
   <div class="blacklist-page">
     <!-- 添加面板 -->
-    <PanelCard title="ADD TO BLACKLIST" :icon="icons.shield" accent="red" padded>
+    <PanelCard title="加入黑名单" :icon="icons.shield" accent="red" padded>
       <div class="add-form">
         <div class="type-pills">
           <button v-for="opt in typeOpts" :key="opt.value"
@@ -14,31 +14,31 @@
           <input v-model="form.value" class="value-input" :placeholder="placeholder" @keyup.enter="add" />
           <button class="add-btn" :disabled="adding" @click="add">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            <span>{{ adding ? 'Adding...' : 'Block' }}</span>
+            <span>{{ adding ? '添加中…' : '屏蔽' }}</span>
           </button>
         </div>
       </div>
     </PanelCard>
 
     <!-- 黑名单列表 -->
-    <PanelCard title="BLOCKED ENTRIES" :icon="icons.list" accent="amber" small>
+    <PanelCard title="已屏蔽条目" :icon="icons.list" accent="amber" small>
       <template #actions>
         <span class="entry-count">{{ items.length }}</span>
       </template>
 
       <el-table :data="items" v-loading="loading" stripe class="blacklist-table">
-        <el-table-column label="Type" width="110">
+        <el-table-column label="类型" width="110">
           <template #default="{ row }">
             <StatusTag :text="row.type.toUpperCase()" :tone="typeTone(row.type)" />
           </template>
         </el-table-column>
-        <el-table-column label="Value" min-width="260">
+        <el-table-column label="值" min-width="260">
           <template #default="{ row }"><span class="mono-value">{{ row.value }}</span></template>
         </el-table-column>
-        <el-table-column prop="operator" label="Operator" width="140" align="center">
+        <el-table-column prop="operator" label="操作方" width="140" align="center">
           <template #default="{ row }"><span class="op-tag">{{ row.operator || '—' }}</span></template>
         </el-table-column>
-        <el-table-column prop="created_at" label="Added" width="200" show-overflow-tooltip>
+        <el-table-column prop="created_at" label="添加时间" width="200" show-overflow-tooltip>
           <template #default="{ row }"><span class="time-text">{{ row.created_at || '—' }}</span></template>
         </el-table-column>
         <el-table-column label="" width="100" align="center">
@@ -48,13 +48,13 @@
                 <polyline points="3,6 5,6 21,6"/>
                 <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
               </svg>
-              <span>Remove</span>
+              <span>移除</span>
             </button>
           </template>
         </el-table-column>
       </el-table>
 
-      <EmptyState v-if="!items.length && !loading" text="No entries in blacklist" />
+      <EmptyState v-if="!items.length && !loading" text="黑名单为空" />
     </PanelCard>
   </div>
 </template>
@@ -80,11 +80,11 @@ const loading = ref(false)
 const typeOpts = [
   { label: 'IP', value: 'ip' },
   { label: 'CIDR', value: 'cidr' },
-  { label: 'DOMAIN', value: 'domain' }
+  { label: '域名', value: 'domain' }
 ]
 
 const placeholder = computed(() => {
-  const map = { ip: 'e.g. 10.0.0.5', cidr: 'e.g. 10.0.0.0/8', domain: 'e.g. example.com' }
+  const map = { ip: '例如：10.0.0.5', cidr: '例如：10.0.0.0/8', domain: '例如：example.com' }
   return map[form.value.type] || ''
 })
 
@@ -98,7 +98,7 @@ async function add() {
     form.value.value = ''
     await refresh()
   } catch (e) {
-    ElMessage.error('Failed: ' + e.message)
+    ElMessage.error('添加失败：' + e.message)
   } finally {
     adding.value = false
   }

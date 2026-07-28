@@ -1,11 +1,11 @@
 <template>
   <div class="tasks-page">
     <!-- 创建面板 -->
-    <PanelCard title="NEW MISSION" :icon="icons.plus" padded>
+    <PanelCard title="新建任务" :icon="icons.plus" padded>
       <div class="create-form">
         <div class="form-row">
           <div class="form-field">
-            <label class="field-label">TYPE</label>
+            <label class="field-label">类型</label>
             <div class="radio-group">
               <label v-for="opt in kindOpts" :key="opt.value" class="radio-item" :class="{ active: form.kind === opt.value }">
                 <input type="radio" v-model="form.kind" :value="opt.value" />
@@ -16,14 +16,14 @@
           </div>
           <div class="form-field">
             <label class="field-label">PORTS</label>
-            <input v-model="form.ports" class="field-input" placeholder="80,443,8080-8090 (optional)" />
+            <input v-model="form.ports" class="field-input" placeholder="80,443,8080-8090（可选）" />
           </div>
         </div>
 
         <div class="form-field">
           <label class="field-label">
-            TARGETS
-            <span class="field-hint">One per line · IP / CIDR / Domain</span>
+            目标
+            <span class="field-hint">每行一个 · IP / CIDR / 域名</span>
           </label>
           <textarea v-model="targets" class="field-textarea" rows="3" placeholder="192.168.1.0/30&#10;10.0.0.1&#10;example.com"></textarea>
         </div>
@@ -32,14 +32,14 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="5,3 19,12 5,21 5,3"/>
           </svg>
-          <span v-if="!creating">LAUNCH MISSION</span>
-          <span v-else>DEPLOYING...</span>
+          <span v-if="!creating">发起任务</span>
+          <span v-else>部署中…</span>
         </button>
       </div>
     </PanelCard>
 
     <!-- 任务列表 -->
-    <PanelCard title="ACTIVE MISSIONS" :icon="icons.grid" small>
+    <PanelCard title="进行中的任务" :icon="icons.grid" small>
       <template #actions>
         <span class="refresh-hint" @click="refresh" title="Refresh">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -50,25 +50,25 @@
       </template>
 
       <el-table :data="tasks" v-loading="loading" stripe class="tasks-table">
-        <el-table-column prop="id" label="Mission ID" width="200" show-overflow-tooltip>
+        <el-table-column prop="id" label="任务 ID" width="200" show-overflow-tooltip>
           <template #default="{ row }"><span class="mono-text">{{ row.id }}</span></template>
         </el-table-column>
-        <el-table-column label="Type" width="110">
+        <el-table-column label="类型" width="110">
           <template #default="{ row }">
-            <span class="kind-tag" :class="'kind-' + row.kind">{{ row.kind === 'scan' ? 'SCAN' : 'VULN' }}</span>
+            <span class="kind-tag" :class="'kind-' + row.kind">{{ row.kind === 'scan' ? '扫描' : '漏洞' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="Progress" min-width="240">
+        <el-table-column label="进度" min-width="240">
           <template #default="{ row }">
             <MissionProgress :done="doneCount(row)" :total="totalCount(row)" :status="row.status" />
           </template>
         </el-table-column>
-        <el-table-column label="Status" width="130" align="center">
+        <el-table-column label="状态" width="130" align="center">
           <template #default="{ row }">
             <StatusTag :text="statusText(row.status)" :tone="statusTone(row.status)" dot :pulse="row.status === 1" />
           </template>
         </el-table-column>
-        <el-table-column label="ACTIONS" width="340" align="center">
+        <el-table-column label="操作" width="340" align="center">
           <template #default="{ row }">
             <div class="action-group">
               <button
@@ -84,6 +84,8 @@
                 <svg v-else-if="act.icon === 'eye'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                 <svg v-else-if="act.icon === 'upload'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 <svg v-else-if="act.icon === 'clock'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+                <svg v-else-if="act.icon === 'pause'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="5" x2="9" y2="19"/><line x1="15" y1="5" x2="15" y2="19"/></svg>
+                <svg v-else-if="act.icon === 'resume'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7,5 19,12 7,19" /></svg>
                 <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 <span class="action-label">{{ act.label }}</span>
               </button>
@@ -96,7 +98,7 @@
     <!-- 详情对话框 -->
     <el-dialog v-model="detailVisible" width="740px" class="task-dialog">
       <template #header>
-        <DialogHeader title="Mission Report" :icon="icons.grid" />
+        <DialogHeader title="任务报告" :icon="icons.grid" />
       </template>
       <template v-if="detail && detail.task">
         <DetailGrid :items="detailItems">
@@ -110,20 +112,20 @@
 
         <MissionProgress :done="doneCount(detail.task)" :total="totalCount(detail.task)" :status="detail.task.status" size="lg" />
 
-        <SectionLabel label="TARGET DETAILS" :count="(detail.items || []).length" />
+        <SectionLabel label="目标明细" :count="(detail.items || []).length" />
         <el-table :data="detail.items" size="small" stripe class="sub-table" max-height="340">
-          <el-table-column prop="target" label="Target" min-width="200" show-overflow-tooltip>
+          <el-table-column prop="target" label="目标" min-width="200" show-overflow-tooltip>
             <template #default="{ row }"><span class="mono-text">{{ row.target }}</span></template>
           </el-table-column>
-          <el-table-column label="Status" width="110" align="center">
+          <el-table-column label="状态" width="110" align="center">
             <template #default="{ row }">
               <StatusTag :text="itemStatusText(row.status)" :tone="itemTone(row.status)" />
             </template>
           </el-table-column>
-          <el-table-column label="Result" min-width="260" show-overflow-tooltip>
+          <el-table-column label="结果" min-width="260" show-overflow-tooltip>
             <template #default="{ row }"><span class="mono-text small">{{ row.result ? JSON.stringify(row.result) : '—' }}</span></template>
           </el-table-column>
-          <el-table-column label="Timestamp" width="180" show-overflow-tooltip>
+          <el-table-column label="时间戳" width="180" show-overflow-tooltip>
             <template #default="{ row }"><span class="text-muted small">{{ row.updated_at || row.created_at || '—' }}</span></template>
           </el-table-column>
         </el-table>
@@ -133,7 +135,7 @@
     <!-- 删除确认对话框 -->
     <el-dialog v-model="delVisible" width="420px" class="task-dialog">
       <template #header>
-        <DialogHeader title="CONFIRM DELETION" :icon="icons.trash" accent="red" />
+        <DialogHeader title="确认删除" :icon="icons.trash" accent="red" />
       </template>
       <p class="del-text">
         确定要删除任务 <span class="mono-text">{{ delTarget }}</span> 吗？<br />
@@ -141,9 +143,9 @@
       </p>
       <template #footer>
         <div class="del-footer">
-          <button class="action-btn" @click="delVisible = false">CANCEL</button>
+          <button class="action-btn" @click="delVisible = false">取消</button>
           <button class="action-btn danger" :disabled="deleting" @click="doDelete">
-            {{ deleting ? 'DELETING...' : 'DELETE' }}
+            {{ deleting ? '删除中…' : '删除' }}
           </button>
         </div>
       </template>
@@ -181,23 +183,23 @@ const deleting = ref(false)
 let pollTimer = null
 
 // 任务状态常量（与后端 model.Task* 对齐）
-const S = { PENDING: 0, RUNNING: 1, DONE: 2 }
+const S = { PENDING: 0, RUNNING: 1, DONE: 2, PAUSED: 3 }
 // 行级操作进行中标记：key = `${act.key}:${row.id}`
 const pending = ref({})
 
 const kindOpts = [
-  { label: 'ASSET SCAN', value: 'scan' },
-  { label: 'VULN DETECT', value: 'vuln' }
+  { label: '资产扫描', value: 'scan' },
+  { label: '漏洞检测', value: 'vuln' }
 ]
 
 const detailItems = computed(() => {
   if (!detail.value || !detail.value.task) return []
   const t = detail.value.task
   return [
-    { key: 'Mission ID', value: t.id, mono: true },
-    { key: 'Type', value: t.kind === 'scan' ? 'Asset Scanning' : 'Vulnerability Detection' },
-    { key: 'Status', value: statusText(t.status), status: true, tone: statusTone(t.status), pulse: t.status === 1 },
-    { key: 'Completion', value: doneCount(t) + ' / ' + totalCount(t), highlight: true }
+    { key: '任务 ID', value: t.id, mono: true },
+    { key: '类型', value: t.kind === 'scan' ? '资产扫描' : '漏洞检测' },
+    { key: '状态', value: statusText(t.status), status: true, tone: statusTone(t.status), pulse: t.status === 1 },
+    { key: '完成度', value: doneCount(t) + ' / ' + totalCount(t), highlight: true }
   ]
 })
 
@@ -254,17 +256,25 @@ function actionsFor(row) {
   const view = { key: 'view', label: '查看详情', icon: 'eye', tone: 'neutral' }
   const abandon = { key: 'abandon', label: '放弃任务', icon: 'trash', tone: 'danger', confirm: true }
   if (row.status === S.RUNNING) {
-    // 进行中：提交进度为主操作，查看详情为信息入口，申请延期为次要，放弃任务为危险项
+    // 进行中：暂停为主操作，申请延期为次要，查看详情为信息入口，放弃任务为危险项
     return [
-      { key: 'submit', label: '提交进度', icon: 'upload', tone: 'primary', api: 'submit' },
-      view,
+      { key: 'pause', label: '暂停', icon: 'pause', tone: 'primary', api: 'pause' },
       { key: 'extend', label: '申请延期', icon: 'clock', tone: 'warn', api: 'extend' },
+      view,
+      abandon
+    ]
+  }
+  if (row.status === S.PAUSED) {
+    // 已暂停：恢复为主操作
+    return [
+      { key: 'resume', label: '恢复', icon: 'resume', tone: 'primary', api: 'resume' },
+      view,
       abandon
     ]
   }
   if (row.status === S.PENDING) {
     return [
-      { key: 'submit', label: '提交进度', icon: 'upload', tone: 'primary', api: 'submit' },
+      { key: 'resume', label: '恢复', icon: 'resume', tone: 'primary', api: 'resume' },
       view,
       abandon
     ]
@@ -285,8 +295,10 @@ async function runAction(act, row) {
   if (act.key === 'view') { view(row.id); return }
   pending.value = { ...pending.value, [actKey(act, row)]: true }
   try {
-    if (act.key === 'submit') {
+    if (act.key === 'resume') {
       await api.resumeTask(row.id)
+    } else if (act.key === 'pause') {
+      await api.pauseTask(row.id)
     } else if (act.key === 'extend') {
       const { value } = await ElMessageBox.prompt(
         '请填写延期原因（可选），提交后将通知管理员审批。',
@@ -307,9 +319,9 @@ async function runAction(act, row) {
 
 function totalCount(task) { return (task.progress && task.progress.total) || 0 }
 function doneCount(task) { return (task.progress && task.progress.done) || 0 }
-function statusText(s) { return ['PENDING', 'RUNNING', 'COMPLETED'][s] || s }
-function statusTone(s) { return ['muted', 'cyan', 'green'][s] || 'muted' }
-function itemStatusText(s) { return ['PENDING', 'DONE', 'FILTERED'][s] || s }
+function statusText(s) { return ['待运行', '运行中', '已完成', '已暂停'][s] || s }
+function statusTone(s) { return ['muted', 'cyan', 'green', 'amber'][s] || 'muted' }
+function itemStatusText(s) { return ['待运行', '已完成', '已过滤'][s] || s }
 function itemTone(s) { return ['muted', 'green', 'amber'][s] || 'muted' }
 
 onMounted(() => {
@@ -433,7 +445,7 @@ onUnmounted(() => {
 .action-btn:not(:disabled):hover {
   border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.06);
 }
-/* 主操作：视觉重心集中于一处（提交进度） */
+/* 主操作：视觉重心集中于一处（暂停 / 恢复） */
 .action-btn.primary {
   border-color: rgba(0,212,255,0.45); color: var(--accent-cyan); background: rgba(0,212,255,0.08);
 }

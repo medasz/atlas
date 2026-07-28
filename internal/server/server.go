@@ -12,6 +12,7 @@ import (
 	"atlas/internal/fingerprint"
 	"atlas/internal/queue"
 	"atlas/internal/ratelimit"
+	"atlas/internal/scan"
 	"atlas/internal/store"
 	"atlas/internal/task"
 	"atlas/internal/vuln"
@@ -28,6 +29,7 @@ type Deps struct {
 	Rate       *ratelimit.Limiter
 	Blacklist  *blacklist.Service
 	Task       *task.Service
+	Scanner    *scan.Scanner // 资产探测引擎（配置热更新推送目标）
 	Fingerprint *fingerprint.Service
 	Vuln       *vuln.Engine
 	WebDir     string // 非空时托管前端静态目录（单容器部署）

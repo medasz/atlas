@@ -40,11 +40,19 @@ type ElasticConfig struct {
 
 // ScanConfig 扫描默认与限速（均为手动可配置，无强制默认）
 type ScanConfig struct {
-	DefaultMode      string `yaml:"default_mode"`       // connect|syn|fin|null|xmas|udp|ack
+	DefaultMode      string `yaml:"default_mode"`       // connect|syn|ack|fin|null|xmas
 	DefaultPortRange string `yaml:"default_port_range"` // top1000|list|range|1..65535
 	MaxConcurrency   int    `yaml:"max_concurrency"`    // 单实例全局最大并发（建议 500）
 	PerTargetRPS     int    `yaml:"per_target_rps"`     // 每目标请求速率（建议 10）
 	PortChunkSize    int    `yaml:"port_chunk_size"`    // 单 IP 端口切块大小，默认 1000
+
+	// raw 包扫描（SYN/ACK/FIN/Null/Xmas）相关配置
+	RawCaptureWindowSec int    `yaml:"raw_capture_window_sec"` // 抓包窗口（秒），默认 3
+	RawRetries          int    `yaml:"raw_retries"`            // 无响应重发次数，默认 1
+	RecordFilteredPorts bool   `yaml:"record_filtered_ports"`  // 是否落库 filtered（防火墙拓扑），默认 true
+	RecordClosedPorts   bool   `yaml:"record_closed_ports"`    // 是否落库 closed/timeout，默认 false（防 PG 膨胀）
+	InstallRstDrop      bool   `yaml:"install_rst_drop"`       // 是否尝试安装 RST-drop 规则（stealth），默认 true
+	RawIface            string `yaml:"raw_iface"`              // 抓包网卡（空=自动选出口，可在界面编辑）
 }
 
 type AuditConfig struct {
@@ -112,11 +120,17 @@ func defaultConfig() *Config {
 		Postgres: PostgresConfig{DSN: "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"},
 		Elastic:  ElasticConfig{Addr: "http://127.0.0.1:9200", Index: "assets"},
 		Scan: ScanConfig{
-			DefaultMode:      "connect",
-			DefaultPortRange: "top1000",
-			MaxConcurrency:   500,
-			PerTargetRPS:     10,
-			PortChunkSize:    1000,
+			DefaultMode:         "connect",
+			DefaultPortRange:    "top1000",
+			MaxConcurrency:      500,
+			PerTargetRPS:        10,
+			PortChunkSize:       1000,
+			RawCaptureWindowSec: 3,
+			RawRetries:          1,
+			RecordFilteredPorts: true,
+			RecordClosedPorts:   false,
+			InstallRstDrop:      true,
+			RawIface:            "",
 		},
 		Audit: AuditConfig{Enabled: true},
 		Auth:  AuthConfig{Enabled: true, Password: "admin", Secret: "atlas-dev-secret-change-me"},

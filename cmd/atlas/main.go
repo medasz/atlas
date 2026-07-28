@@ -107,8 +107,8 @@ func main() {
 	// 任务调度服务（默认占位处理器，Issue #4 注入真实探测）
 	taskSvc := task.New(st, q, auditor, bl, limiter, cfg.Scan.MaxConcurrency, defaultPorts, cfg.Scan.PortChunkSize)
 
-	// 资产探测引擎（Issue #4）：注入为资产扫描处理器
-	scanner := scan.New(st, limiter, defaultPorts, fp)
+	// 资产探测引擎（Issue #4）：注入为资产扫描处理器，传入扫描配置（模式 + raw 参数）
+	scanner := scan.New(st, limiter, defaultPorts, fp, cfg.Scan)
 	taskSvc.SetProcessor(scanner)
 
 	// 漏洞检测引擎（Issue #10~#13）：加载目录模板 + 已持久化模板
@@ -138,6 +138,7 @@ func main() {
 		Rate:       limiter,
 		Blacklist:  bl,
 		Task:       taskSvc,
+		Scanner:    scanner,
 		Fingerprint: fp,
 		Vuln:       vulnEngine,
 		WebDir:     *webDir,

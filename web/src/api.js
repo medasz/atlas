@@ -31,6 +31,7 @@ export const api = {
   getTask: (id) => request('GET', '/api/tasks/' + encodeURIComponent(id)),
   createTask: (payload) => request('POST', '/api/tasks', payload),
   resumeTask: (id) => request('POST', '/api/tasks/' + encodeURIComponent(id) + '/resume'),
+  pauseTask: (id) => request('POST', '/api/tasks/' + encodeURIComponent(id) + '/pause'),
   listBlacklist: () => request('GET', '/api/blacklist'),
   addBlacklist: (item) => request('POST', '/api/blacklist', item),
   deleteBlacklist: (type, value) =>

@@ -183,13 +183,13 @@ func (s *Store) UpsertPort(ctx context.Context, p model.Port) error {
 	cert, _ := json.Marshal(p.Cert)
 	web, _ := json.Marshal(p.WebInfo)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ports (ip, port, proto, service, version, banner, cert, title, host, is_ipv6, webinfo, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		INSERT INTO ports (ip, port, proto, state, service, version, banner, cert, title, host, is_ipv6, webinfo, first_seen, last_seen)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (ip, port, proto) DO UPDATE SET
-			service=EXCLUDED.service, version=EXCLUDED.version, banner=EXCLUDED.banner,
+			state=EXCLUDED.state, service=EXCLUDED.service, version=EXCLUDED.version, banner=EXCLUDED.banner,
 			cert=EXCLUDED.cert, title=EXCLUDED.title, host=EXCLUDED.host, is_ipv6=EXCLUDED.is_ipv6,
 			webinfo=EXCLUDED.webinfo, last_seen=EXCLUDED.last_seen`,
-		p.IP, p.Port, p.Proto, p.Service, p.Version, p.Banner, cert, p.Title, p.Host, p.IsIPv6, web, p.FirstSeen, p.LastSeen)
+		p.IP, p.Port, p.Proto, p.State, p.Service, p.Version, p.Banner, cert, p.Title, p.Host, p.IsIPv6, web, p.FirstSeen, p.LastSeen)
 	if err != nil {
 		return err
 	}
@@ -201,6 +201,7 @@ func (s *Store) UpsertPort(ctx context.Context, p model.Port) error {
 			"ip":       p.IP,
 			"port":     p.Port,
 			"proto":    p.Proto,
+			"state":    p.State,
 			"service":  p.Service,
 			"version":  p.Version,
 			"banner":   p.Banner,

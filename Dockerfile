@@ -6,10 +6,13 @@ ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=$GOPROXY
 ENV GOTOOLCHAIN=local
 WORKDIR /src
+# raw 抓包（SYN/ACK/FIN/Null/Xmas）依赖 gopacket/pcap（CGO），构建期需 libpcap 头文件。
+RUN apt-get update && apt-get install -y libpcap-dev && rm -rf /var/lib/apt/lists/*
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/atlas ./cmd/atlas
+# 启用 raw_capture 构建标签并打开 CGO；默认构建（无该 tag）下 raw 模式会优雅降级为 connect。
+RUN CGO_ENABLED=1 go build -tags raw_capture -o /out/atlas ./cmd/atlas
 
 # ---- 前端构建 ----
 FROM node:20 AS webbuild
@@ -23,7 +26,8 @@ RUN npm run build
 
 # ---- 运行镜像 ----
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# libpcap0.8 为 raw 抓包二进制的运行时动态链接依赖（缺它容器无法启动）。
+RUN apt-get update && apt-get install -y ca-certificates libpcap0.8 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=gobuild /out/atlas /app/atlas
 COPY --from=webbuild /web/dist /app/web/dist

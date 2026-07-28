@@ -13,6 +13,7 @@ func (s *Server) registerTasks(g *gin.RouterGroup) {
 	g.GET("/tasks", s.listTasks)
 	g.GET("/tasks/:id", s.getTask)
 	g.POST("/tasks/:id/resume", s.resumeTask)
+	g.POST("/tasks/:id/pause", s.pauseTask)
 	g.POST("/tasks/:id/extend", s.extendTask)
 	g.DELETE("/tasks/:id", s.deleteTask)
 }
@@ -63,6 +64,14 @@ func (s *Server) getTask(c *gin.Context) {
 
 func (s *Server) resumeTask(c *gin.Context) {
 	if err := s.deps.Task.Resume(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) pauseTask(c *gin.Context) {
+	if err := s.deps.Task.Pause(c.Request.Context(), c.Param("id")); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

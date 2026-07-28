@@ -197,12 +197,16 @@ func (svc *Service) runInProcess(ctx context.Context, taskID string) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for it := range ch {
-				svc.processOne(ctx, task, it.Target, it.Ports)
-			}
-		}()
+			go func() {
+				defer wg.Done()
+				for it := range ch {
+					cur, e := svc.store.GetTask(ctx, task.ID)
+					if e == nil && cur.Status == model.TaskPaused {
+						continue
+					}
+					svc.processOne(ctx, cur, it.Target, it.Ports)
+				}
+			}()
 	}
 	wg.Wait()
 }
@@ -239,6 +243,9 @@ func (svc *Service) processOne(ctx context.Context, task model.Task, target, por
 			log.Printf("task: processOne recovered panic task=%s target=%s ports=%s: %v\n%s", task.ID, target, ports, r, debug.Stack())
 		}
 	}()
+	if task.Status == model.TaskPaused {
+		return
+	}
 	if err := svc.rate.WaitGlobal(ctx); err != nil {
 		return
 	}
@@ -262,6 +269,11 @@ func (svc *Service) processOne(ctx context.Context, task model.Task, target, por
 func (svc *Service) Resume(ctx context.Context, taskID string) error {
 	_ = svc.store.UpdateTaskStatus(ctx, taskID, model.TaskRunning)
 	return svc.dispatch(ctx, taskID)
+}
+
+// Pause 暂停任务：置为 PAUSED，停止继续分发；在途子项在 processOne 中被跳过并保留 pending
+func (svc *Service) Pause(ctx context.Context, taskID string) error {
+	return svc.store.UpdateTaskStatus(ctx, taskID, model.TaskPaused)
 }
 
 // portsForScope 解析某任务端口列表：优先用 scope.ports，否则回退默认端口

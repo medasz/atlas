@@ -15,7 +15,7 @@
         </div>
         <div class="brand-text">
           <h1>A T L A S</h1>
-          <p>Spectrum Intelligence</p>
+          <p>频谱情报</p>
         </div>
       </div>
 
@@ -53,7 +53,7 @@
     </div>
 
     <footer class="login-footer">
-      <span>ASSET · VULNERABILITY · INTELLIGENCE</span>
+      <span>资产 · 漏洞 · 情报</span>
     </footer>
   </div>
 </template>

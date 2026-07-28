@@ -20,6 +20,7 @@ type Port struct {
 	IP      string         `json:"ip"`
 	Port    int            `json:"port"`
 	Proto   string         `json:"proto"`
+	State   string         `json:"state"` // 端口状态：open|closed|filtered|timeout|open|filtered|unfiltered（来自多模式扫描）
 	Service string         `json:"service"`
 	Version string         `json:"version"`
 	Banner  string         `json:"banner"`
@@ -94,6 +95,7 @@ const (
 	TaskPending  = 0
 	TaskRunning  = 1
 	TaskDone     = 2
+	TaskPaused   = 3
 	TaskItemPending  = 0
 	TaskItemDone     = 1
 	TaskItemFiltered = 2

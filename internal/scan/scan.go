@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"runtime/debug"
@@ -9,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"atlas/internal/config"
 	"atlas/internal/fingerprint"
 	"atlas/internal/model"
 	"atlas/internal/ratelimit"
+	"atlas/internal/scan/tcpscan"
 	"atlas/internal/store"
 	"golang.org/x/net/publicsuffix"
 )
@@ -24,14 +27,43 @@ type Scanner struct {
 	defaultPorts []int
 	timeout      time.Duration
 	connSem      int
+
+	// scanCfg 为运行时可热更新的扫描配置（模式/网卡/raw 参数）。
+	// 通过 SetScanConfig 由配置 API 推送更新，scanHost 执行时实时读取，
+	// 因此界面改模式/网卡无需重启即对新建任务生效。
+	mu      sync.RWMutex
+	scanCfg config.ScanConfig
 }
 
-// New 构造扫描器（fp 可为 nil，nil 时不做技术指纹识别）
-func New(s *store.Store, r *ratelimit.Limiter, defaultPorts []int, fp *fingerprint.Service) *Scanner {
+// New 构造扫描器（fp 可为 nil，nil 时不做技术指纹识别）。
+// scanCfg 提供扫描模式与 raw 相关配置（按值拷贝，后续由 SetScanConfig 热更新）。
+func New(s *store.Store, r *ratelimit.Limiter, defaultPorts []int, fp *fingerprint.Service, scanCfg config.ScanConfig) *Scanner {
 	if len(defaultPorts) == 0 {
 		defaultPorts = TopPorts
 	}
-	return &Scanner{store: s, rate: r, fp: fp, defaultPorts: defaultPorts, timeout: 1500 * time.Millisecond, connSem: 50}
+	return &Scanner{
+		store:   s,
+		rate:    r,
+		fp:      fp,
+		defaultPorts: defaultPorts,
+		timeout: 1500 * time.Millisecond,
+		connSem: 50,
+		scanCfg: scanCfg,
+	}
+}
+
+// SetScanConfig 运行时热更新扫描配置：界面改模式/网卡后无需重启即对新建任务生效。
+func (sc *Scanner) SetScanConfig(cfg config.ScanConfig) {
+	sc.mu.Lock()
+	sc.scanCfg = cfg
+	sc.mu.Unlock()
+}
+
+// liveScanCfg 读取当前生效的扫描配置（受 RWMutex 保护，避免与 SetScanConfig 竞争）。
+func (sc *Scanner) liveScanCfg() config.ScanConfig {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.scanCfg
 }
 
 // Process 实现 task.Processor：根据目标类型分派
@@ -60,14 +92,91 @@ func (sc *Scanner) portsFor(task model.Task) []int {
 	return sc.defaultPorts
 }
 
-// scanHost 对 IP 目标做 TCP 端口扫描 + 服务/HTTP 探测
+// scanHost 对 IP 目标做 TCP 端口扫描 + 服务/HTTP 探测。
+// 按配置模式分派：raw 模式（SYN/ACK/FIN/Null/Xmas）整块广发 + 窗口抓包；
+// connect 模式逐端口 goroutine 全连接（保留原限速 + panic 安全网）。
+// raw 抓包不可用时自动降级为 connect。
 func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[string]any, error) {
+	// 实时读取扫描配置：运行时通过 SetScanConfig 热更新后，此处立即生效（无需重启）。
+	live := sc.liveScanCfg()
 	isV6 := isIPv6(ip)
+	recordFiltered := live.RecordFilteredPorts
+	recordClosed := live.RecordClosedPorts
+
 	var (
 		mu        sync.Mutex
 		openPorts []int
 		portsOut  []model.Port
 	)
+
+	if isV6 {
+		// IPv6 能力边界：raw 抓包/ICMPv6 判定与 IPv4 不同，本期强制降级 connect 并记日志。
+		log.Printf("tcpscan: IPv6 目标 %s 强制使用 connect（raw 暂不支持 IPv6）", ip)
+		res, err := sc.connectFallback(ctx, ip, ports)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range ports {
+			if r, ok := res[p]; ok {
+				sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts, &portsOut)
+			}
+		}
+		return sc.finishHost(ctx, ip, isV6, openPorts)
+	}
+
+	mode := tcpscan.Mode(live.DefaultMode)
+	if mode == "" {
+		mode = tcpscan.ModeConnect
+	}
+
+	if mode.IsRaw() {
+		// raw 批量：整个 IP 的端口块一次性发出 + 一个抓包窗口回收响应，
+		// 速率限制在每个目标 IP 维度各触发一次（与 connect 路径语义一致）。
+		_ = sc.rate.WaitGlobal(ctx)
+		_ = sc.rate.WaitTarget(ctx, ip)
+		opts := tcpscan.Options{
+			Timeout:        time.Duration(live.RawCaptureWindowSec) * time.Second,
+			Retries:        live.RawRetries,
+			Iface:          live.RawIface,
+			InstallRstDrop: live.InstallRstDrop,
+		}
+		ts, err := tcpscan.New(mode, opts)
+		if err != nil {
+			// 非法模式：回退 connect 路径
+			log.Printf("tcpscan: 非法模式 %q，回退 connect: %v", mode, err)
+			mode = tcpscan.ModeConnect
+		} else {
+			var res map[int]tcpscan.Result
+			var scanErr error
+			// recover 兜底：保证单目标 raw 扫描 panic 不拖垮整个 worker。
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("scan: recovered panic in raw scan ip=%s: %v\n%s", ip, r, debug.Stack())
+						scanErr = fmt.Errorf("raw scan panic: %v", r)
+					}
+				}()
+				res, scanErr = ts.Scan(ctx, ip, ports, opts)
+			}()
+			if scanErr != nil {
+				if tcpscan.IsRawUnavailable(scanErr) {
+					log.Printf("tcpscan: raw 抓包不可用，降级为 connect 扫描 %s: %v", ip, scanErr)
+					res, scanErr = sc.connectFallback(ctx, ip, ports)
+				}
+				if scanErr != nil {
+					return nil, scanErr
+				}
+			}
+			for _, p := range ports {
+				if r, ok := res[p]; ok {
+					sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts, &portsOut)
+				}
+			}
+			return sc.finishHost(ctx, ip, isV6, openPorts)
+		}
+	}
+
+	// connect 模式（含非法模式回退）：逐端口 goroutine（保留原限速 + panic 安全网）
 	sem := make(chan struct{}, sc.connSem)
 	var wg sync.WaitGroup
 	for _, port := range ports {
@@ -95,6 +204,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 				IP:      ip,
 				Port:    p,
 				Proto:   "tcp",
+				State:   string(tcpscan.Open),
 				Service: guessService(p, banner),
 				Banner:  banner,
 				Host:    ip,
@@ -102,19 +212,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 				FirstSeen: time.Now(),
 				LastSeen:  time.Now(),
 			}
-			if commonHTTPPorts[p] || looksLikeHTTP(banner) {
-				if hr, err := httpProbe(ip, p, sc.timeout); err == nil {
-					portModel.Title = hr.Title
-					webinfo := map[string]any{"status": hr.Status, "server": hr.Server, "x_powered_by": hr.XPoweredBy, "scheme": hr.Scheme}
-					if sc.fp != nil {
-						webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, banner)
-					}
-					portModel.WebInfo = webinfo
-					if hr.Cert != nil {
-						portModel.Cert = hr.Cert
-					}
-				}
-			}
+			sc.httpEnrich(ip, p, banner, &portModel)
 			_ = sc.store.UpsertPort(ctx, portModel)
 
 			mu.Lock()
@@ -124,7 +222,11 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 		}(port)
 	}
 	wg.Wait()
+	return sc.finishHost(ctx, ip, isV6, openPorts)
+}
 
+// finishHost 落库主机资产并返回扫描结果摘要。
+func (sc *Scanner) finishHost(ctx context.Context, ip string, isV6 bool, openPorts []int) (map[string]any, error) {
 	if err := sc.store.UpsertHost(ctx, model.Host{
 		IP:        ip,
 		OpenPorts: openPorts,
@@ -135,6 +237,89 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 		return nil, err
 	}
 	return map[string]any{"ip": ip, "open_ports": openPorts, "count": len(openPorts)}, nil
+}
+
+// shouldPersist 依据配置决定某端口状态是否落库：
+//   - open 始终落库（确认的开放端口）；
+//   - filtered / open|filtered / unfiltered 受 RecordFilteredPorts 控制（默认 true），
+//     即「不确定/拓扑类」结果默认落库，closed/timeout 不在此列；
+//   - closed / timeout 受 RecordClosedPorts 控制（默认 false，防全端口扫描 PG 膨胀）。
+func shouldPersist(state string, recordFiltered, recordClosed bool) bool {
+	switch tcpscan.State(state) {
+	case tcpscan.Open:
+		return true
+	case tcpscan.Filtered, tcpscan.OpenFiltered, tcpscan.Unfiltered:
+		return recordFiltered
+	case tcpscan.Closed, tcpscan.Timeout:
+		return recordClosed
+	}
+	return false
+}
+
+// persistResult 按持久化策略将单端口扫描结果落库。
+func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpscan.Result, isV6 bool, recordFiltered, recordClosed bool, mu *sync.Mutex, openPorts *[]int, portsOut *[]model.Port) {
+	if !shouldPersist(string(r.State), recordFiltered, recordClosed) {
+		return
+	}
+	portModel := model.Port{
+		IP:      ip,
+		Port:    p,
+		Proto:   "tcp",
+		State:   string(r.State),
+		Service: guessService(p, r.Banner),
+		Banner:  r.Banner,
+		Host:    ip,
+		IsIPv6:  isV6,
+		FirstSeen: time.Now(),
+		LastSeen:  time.Now(),
+	}
+	if r.State == tcpscan.Open {
+		sc.httpEnrich(ip, p, r.Banner, &portModel)
+	}
+	_ = sc.store.UpsertPort(ctx, portModel)
+
+	mu.Lock()
+	*portsOut = append(*portsOut, portModel)
+	if r.State == tcpscan.Open {
+		*openPorts = append(*openPorts, p)
+	}
+	mu.Unlock()
+}
+
+// httpEnrich 对满足 HTTP 条件的端口做 HTTP(S) 探测并回填标题/技术栈/证书。
+func (sc *Scanner) httpEnrich(ip string, p int, banner string, portModel *model.Port) {
+	if !(commonHTTPPorts[p] || looksLikeHTTP(banner)) {
+		return
+	}
+	hr, err := httpProbe(ip, p, sc.timeout)
+	if err != nil {
+		return
+	}
+	portModel.Title = hr.Title
+	webinfo := map[string]any{"status": hr.Status, "server": hr.Server, "x_powered_by": hr.XPoweredBy, "scheme": hr.Scheme}
+	if sc.fp != nil {
+		webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, banner)
+	}
+	portModel.WebInfo = webinfo
+	if hr.Cert != nil {
+		portModel.Cert = hr.Cert
+	}
+}
+
+// connectFallback raw 抓包不可用时的降级：逐端口全连接，仅能判定 open/closed。
+func (sc *Scanner) connectFallback(ctx context.Context, ip string, ports []int) (map[int]tcpscan.Result, error) {
+	out := make(map[int]tcpscan.Result, len(ports))
+	for _, p := range ports {
+		conn, err := tcpConnect(ip, p, sc.timeout)
+		if err != nil {
+			out[p] = tcpscan.Result{Port: p, State: tcpscan.Closed}
+			continue
+		}
+		banner := grabBanner(conn, sc.timeout)
+		_ = conn.Close()
+		out[p] = tcpscan.Result{Port: p, State: tcpscan.Open, Banner: banner}
+	}
+	return out, nil
 }
 
 // scanDomain 对域名目标做 HTTP(S) 探测

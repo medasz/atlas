@@ -45,6 +45,11 @@
           <input class="field-input" type="text" v-model="form.defaultPortRange" placeholder="top1000 | 1-1000 | 80,443,8080" />
           <span class="field-hint">支持 top1000 / 列表 / 区间</span>
         </label>
+        <label class="field">
+          <span class="field-label">抓包网卡 (RawIface)</span>
+          <input class="field-input" type="text" v-model="form.rawIface" placeholder="留空=自动选出口网卡 (如 eth0)" />
+          <span class="field-hint">raw 模式(SYN/ACK/FIN/Null/Xmas)抓包所用网卡；多网卡或容器环境建议显式指定</span>
+        </label>
       </div>
     </section>
 
@@ -83,7 +88,7 @@ import ViewHeader from '../components/ViewHeader.vue'
 import Banner from '../components/Banner.vue'
 import PrimaryButton from '../components/PrimaryButton.vue'
 
-const modes = ['connect', 'syn', 'fin', 'null', 'xmas', 'udp', 'ack']
+const modes = ['connect', 'syn', 'ack', 'fin', 'null', 'xmas']
 
 const scanIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
 const auditIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="13" y2="11"/></svg>'
@@ -93,6 +98,7 @@ const form = reactive({
   perTargetRPS: 10,
   defaultMode: 'connect',
   defaultPortRange: 'top1000',
+  rawIface: '',
   auditEnabled: true
 })
 
@@ -110,6 +116,7 @@ async function load() {
     form.perTargetRPS = cfg.scan.per_target_rps
     form.defaultMode = cfg.scan.default_mode
     form.defaultPortRange = cfg.scan.default_port_range
+    form.rawIface = cfg.scan.raw_iface || ''
     form.auditEnabled = cfg.audit.enabled
   } catch (e) {
     error.value = '加载配置失败：' + e.message
@@ -126,7 +133,8 @@ async function save() {
         max_concurrency: form.maxConcurrency,
         per_target_rps: form.perTargetRPS,
         default_mode: form.defaultMode,
-        default_port_range: form.defaultPortRange
+        default_port_range: form.defaultPortRange,
+        raw_iface: form.rawIface
       },
       audit: { enabled: form.auditEnabled }
     })
