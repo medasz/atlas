@@ -35,19 +35,53 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // Close 关闭连接池
 func (s *Store) Close() { s.pool.Close() }
 
-// RunMigrations 按字典序执行 migrations 目录下所有 *.up.sql，已应用的跳过
+// RunMigrations 按字典序执行 migrations 目录下所有 *.up.sql，已应用的跳过。
+//
+// 关键：atlas 与 atlas2 等多实例会在启动时各自执行迁移。Postgres 的
+// CREATE TABLE IF NOT EXISTS 在并发下存在竞态（检查存在与创建类型非原子），
+// 可能导致 pg_type_typname_nsp_index 唯一约束冲突（duplicate key）。
+// 因此这里：
+//  1. 在事务开始时获取事务级 advisory 锁，保证同一时刻只有一个实例在迁移，
+//     其余实例阻塞至对方提交后再以“已应用”状态跳过；
+//  2. 整个迁移在一个事务内完成，单个迁移文件失败即整体回滚，
+//     不会残留半截的表/类型等孤儿对象。
 func (s *Store) RunMigrations(ctx context.Context, dir string) error {
 	if err := s.ensureMigrationsTable(ctx); err != nil {
 		return err
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 串行化多实例迁移；未获锁的实例会阻塞至对方提交。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(916873245)`); err != nil {
+		return fmt.Errorf("migration lock: %w", err)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	applied, err := s.appliedMigrations(ctx)
+	rows, err := tx.Query(ctx, `SELECT name FROM schema_migrations`)
 	if err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+	applied := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		applied[n] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return err
 	}
+
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
 			continue
@@ -60,13 +94,16 @@ func (s *Store) RunMigrations(ctx context.Context, dir string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.pool.Exec(ctx, string(data)); err != nil {
+		if _, err := tx.Exec(ctx, string(data)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
-		if _, err := s.pool.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO schema_migrations(name, applied_at) VALUES($1,$2)`, name, time.Now()); err != nil {
 			return err
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }
@@ -78,23 +115,6 @@ func (s *Store) ensureMigrationsTable(ctx context.Context) error {
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`)
 	return err
-}
-
-func (s *Store) appliedMigrations(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.pool.Query(ctx, `SELECT name FROM schema_migrations`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	m := map[string]bool{}
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		m[n] = true
-	}
-	return m, rows.Err()
 }
 
 // InsertAudit 写入审计记录（审计开关由调用方控制）
