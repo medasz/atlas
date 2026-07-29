@@ -15,13 +15,13 @@ import (
 	"atlas/internal/model"
 	"atlas/internal/ratelimit"
 	"atlas/internal/scan/tcpscan"
-	"atlas/internal/store"
+	"atlas/internal/assetstore"
 	"golang.org/x/net/publicsuffix"
 )
 
 // Scanner 资产探测引擎，实现 task.Processor
 type Scanner struct {
-	store        *store.Store
+	asset        assetstore.AssetStore
 	rate         *ratelimit.Limiter
 	fp           *fingerprint.Service
 	defaultPorts []int
@@ -37,12 +37,12 @@ type Scanner struct {
 
 // New 构造扫描器（fp 可为 nil，nil 时不做技术指纹识别）。
 // scanCfg 提供扫描模式与 raw 相关配置（按值拷贝，后续由 SetScanConfig 热更新）。
-func New(s *store.Store, r *ratelimit.Limiter, defaultPorts []int, fp *fingerprint.Service, scanCfg config.ScanConfig) *Scanner {
+func New(asset assetstore.AssetStore, r *ratelimit.Limiter, defaultPorts []int, fp *fingerprint.Service, scanCfg config.ScanConfig) *Scanner {
 	if len(defaultPorts) == 0 {
 		defaultPorts = TopPorts
 	}
 	return &Scanner{
-		store:   s,
+		asset:   asset,
 		rate:    r,
 		fp:      fp,
 		defaultPorts: defaultPorts,
@@ -106,7 +106,6 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 	var (
 		mu        sync.Mutex
 		openPorts []int
-		portsOut  []model.Port
 	)
 
 	if isV6 {
@@ -118,7 +117,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 		}
 		for _, p := range ports {
 			if r, ok := res[p]; ok {
-				sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts, &portsOut)
+				sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts)
 			}
 		}
 		return sc.finishHost(ctx, ip, isV6, openPorts)
@@ -169,7 +168,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 			}
 			for _, p := range ports {
 				if r, ok := res[p]; ok {
-					sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts, &portsOut)
+					sc.persistResult(ctx, ip, p, r, isV6, recordFiltered, recordClosed, &mu, &openPorts)
 				}
 			}
 			return sc.finishHost(ctx, ip, isV6, openPorts)
@@ -200,7 +199,8 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 			banner := grabBanner(conn, sc.timeout)
 			_ = conn.Close()
 
-			portModel := model.Port{
+			portAsset := model.Asset{
+				Kind:    model.KindPort,
 				IP:      ip,
 				Port:    p,
 				Proto:   "tcp",
@@ -212,12 +212,11 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 				FirstSeen: time.Now(),
 				LastSeen:  time.Now(),
 			}
-			sc.httpEnrich(ip, p, banner, &portModel)
-			_ = sc.store.UpsertPort(ctx, portModel)
+			sc.httpEnrich(ip, p, banner, &portAsset)
+			sc.upsert(ctx, portAsset)
 
 			mu.Lock()
 			openPorts = append(openPorts, p)
-			portsOut = append(portsOut, portModel)
 			mu.Unlock()
 		}(port)
 	}
@@ -227,10 +226,11 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 
 // finishHost 落库主机资产并返回扫描结果摘要。
 func (sc *Scanner) finishHost(ctx context.Context, ip string, isV6 bool, openPorts []int) (map[string]any, error) {
-	if err := sc.store.UpsertHost(ctx, model.Host{
+	if err := sc.asset.Upsert(ctx, model.Asset{
+		Kind:      model.KindHost,
 		IP:        ip,
-		OpenPorts: openPorts,
 		IsIPv6:    isV6,
+		OpenPorts: len(openPorts),
 		FirstSeen: time.Now(),
 		LastSeen:  time.Now(),
 	}); err != nil {
@@ -257,11 +257,12 @@ func shouldPersist(state string, recordFiltered, recordClosed bool) bool {
 }
 
 // persistResult 按持久化策略将单端口扫描结果落库。
-func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpscan.Result, isV6 bool, recordFiltered, recordClosed bool, mu *sync.Mutex, openPorts *[]int, portsOut *[]model.Port) {
+func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpscan.Result, isV6 bool, recordFiltered, recordClosed bool, mu *sync.Mutex, openPorts *[]int) {
 	if !shouldPersist(string(r.State), recordFiltered, recordClosed) {
 		return
 	}
-	portModel := model.Port{
+	portAsset := model.Asset{
+		Kind:    model.KindPort,
 		IP:      ip,
 		Port:    p,
 		Proto:   "tcp",
@@ -274,12 +275,11 @@ func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpsca
 		LastSeen:  time.Now(),
 	}
 	if r.State == tcpscan.Open {
-		sc.httpEnrich(ip, p, r.Banner, &portModel)
+		sc.httpEnrich(ip, p, r.Banner, &portAsset)
 	}
-	_ = sc.store.UpsertPort(ctx, portModel)
+	sc.upsert(ctx, portAsset)
 
 	mu.Lock()
-	*portsOut = append(*portsOut, portModel)
 	if r.State == tcpscan.Open {
 		*openPorts = append(*openPorts, p)
 	}
@@ -287,7 +287,7 @@ func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpsca
 }
 
 // httpEnrich 对满足 HTTP 条件的端口做 HTTP(S) 探测并回填标题/技术栈/证书。
-func (sc *Scanner) httpEnrich(ip string, p int, banner string, portModel *model.Port) {
+func (sc *Scanner) httpEnrich(ip string, p int, banner string, portModel *model.Asset) {
 	if !(commonHTTPPorts[p] || looksLikeHTTP(banner)) {
 		return
 	}
@@ -303,6 +303,13 @@ func (sc *Scanner) httpEnrich(ip string, p int, banner string, portModel *model.
 	portModel.WebInfo = webinfo
 	if hr.Cert != nil {
 		portModel.Cert = hr.Cert
+	}
+}
+
+// upsert 写入资产；单条失败仅记日志不中断扫描（与 panic 安全网一致，避免单端口写入异常拖垮整个目标）。
+func (sc *Scanner) upsert(ctx context.Context, a model.Asset) {
+	if err := sc.asset.Upsert(ctx, a); err != nil {
+		log.Printf("scan: upsert %s %s failed: %v", a.Kind, model.AssetID(a), err)
 	}
 }
 
@@ -335,28 +342,31 @@ func (sc *Scanner) scanDomain(ctx context.Context, domain string, ports []int) (
 			continue
 		}
 		webinfo := map[string]any{"status": hr.Status, "server": hr.Server, "x_powered_by": hr.XPoweredBy, "scheme": hr.Scheme}
-	if sc.fp != nil {
-		webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, "")
-	}
-	portModel := model.Port{
-		IP:      domain,
-		Port:    p,
-		Proto:   "tcp",
-		Service: "http",
-		Title:   hr.Title,
-		Host:    domain,
-		WebInfo: webinfo,
-		FirstSeen: time.Now(),
-		LastSeen:  time.Now(),
-	}
-		if hr.Cert != nil {
-			portModel.Cert = hr.Cert
+		if sc.fp != nil {
+			webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, "")
 		}
-		_ = sc.store.UpsertPort(ctx, portModel)
+		portAsset := model.Asset{
+			Kind:    model.KindPort,
+			IP:      domain,
+			Port:    p,
+			Proto:   "tcp",
+			Service: "http",
+			Title:   hr.Title,
+			Host:    domain,
+			WebInfo: webinfo,
+			FirstSeen: time.Now(),
+			LastSeen:  time.Now(),
+		}
+		if hr.Cert != nil {
+			portAsset.Cert = hr.Cert
+		}
+		sc.upsert(ctx, portAsset)
 		open = append(open, webinfo)
 	}
-	if err := sc.store.UpsertDomain(ctx, model.Domain{
-		Name:              domain,
+	if err := sc.asset.Upsert(ctx, model.Asset{
+		Kind:              model.KindDomain,
+		Domain:            domain,
+		Host:              domain,
 		RegistrableDomain: registrableDomain(domain),
 		FirstSeen:         time.Now(),
 		LastSeen:          time.Now(),
