@@ -2,51 +2,6 @@ package model
 
 import "time"
 
-// Host 主机资产
-type Host struct {
-	IP        string         `json:"ip"`
-	ASN       int            `json:"asn"`
-	Org       string         `json:"org"`
-	Geo       map[string]any `json:"geo"`
-	OS        string         `json:"os"`
-	IsIPv6    bool           `json:"is_ipv6"`
-	OpenPorts []int          `json:"open_ports"`
-	FirstSeen time.Time      `json:"first_seen"`
-	LastSeen  time.Time      `json:"last_seen"`
-}
-
-// Port 端口/服务资产
-type Port struct {
-	IP      string         `json:"ip"`
-	Port    int            `json:"port"`
-	Proto   string         `json:"proto"`
-	State   string         `json:"state"` // 端口状态：open|closed|filtered|timeout|open|filtered|unfiltered（来自多模式扫描）
-	Service string         `json:"service"`
-	Version string         `json:"version"`
-	Banner  string         `json:"banner"`
-	Title   string         `json:"title"`
-	Host    string         `json:"host"`    // 到达该端口所用的主机名/域名（HTTP Host）
-	IsIPv6  bool           `json:"is_ipv6"`
-	Cert    map[string]any `json:"cert"`
-	WebInfo map[string]any `json:"webinfo"`
-	FirstSeen time.Time     `json:"first_seen"`
-	LastSeen  time.Time     `json:"last_seen"`
-}
-
-// Domain 域名资产（含根域、解析、WHOIS 占位）
-type Domain struct {
-	Name              string    `json:"name"`               // 完整主机名
-	RegistrableDomain string    `json:"registrable_domain"` // 注册根域
-	ResolvedIPs       []string  `json:"resolved_ips"`
-	CNAME             []string  `json:"cname"`
-	Org               string    `json:"org"`
-	ASN               int       `json:"asn"`
-	IsIPv6            bool      `json:"is_ipv6"`
-	Whois             map[string]any `json:"whois"`
-	FirstSeen         time.Time `json:"first_seen"`
-	LastSeen          time.Time `json:"last_seen"`
-}
-
 // BlacklistItem 黑名单条目（不扫描的资产）
 type BlacklistItem struct {
 	Type      string    `json:"type"` // ip | cidr | domain

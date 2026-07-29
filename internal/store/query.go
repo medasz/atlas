@@ -1,8 +1,6 @@
 package store
 
 import (
-	"context"
-	"database/sql"
 	"strconv"
 	"strings"
 )
@@ -21,7 +19,7 @@ type cmpNode struct {
 type andNode struct{ l, r node }
 type orNode struct{ l, r node }
 
-// ---- 字段解析 ----
+// ---- 字段解析 ---
 
 type fdef struct {
 	es        string // ES 字段名（port/host 文档；domain 文档复用 host 字段）
@@ -179,8 +177,8 @@ func unquote(s string) string {
 	return s
 }
 
-// parseQuery 解析为 AST；无有效节点返回 nil（视为无过滤）
-func parseQuery(q string) node {
+// ParseQuery 解析为 AST；无有效节点返回 nil（视为无过滤）
+func ParseQuery(q string) node {
 	toks, err := tokenize(q)
 	if err != nil || len(toks) == 0 {
 		return nil
@@ -322,7 +320,7 @@ func wildES(v string) string {
 	return v
 }
 
-// ---- PG 渲染 ----
+// ---- PG 渲染（仅解析单测依赖，生产路径已迁 ES）----
 
 func renumber(sql string, args []any, acc *[]any) string {
 	out := sql
@@ -420,7 +418,7 @@ func wildPG(v string) string {
 	return v
 }
 
-// ---- 检索入口（含标准分页） ----
+// ---- 检索结果结构 ----
 
 // SearchResult 资产检索的结构化分页结果
 type SearchResult struct {
@@ -431,32 +429,8 @@ type SearchResult struct {
 	Items      []map[string]any `json:"items"`       // 当前页数据列表
 }
 
-// assetCols host/port/domain 三表 UNION 的公共投影列（缺列补 NULL）
-const assetCols = `doc_type, ip, port, proto, name, org, os, asn, is_ipv6, banner, title, service, version, registrable_domain, server`
-
-// SearchAssets 资产检索：键式/表达式语法（参考 FOFA Dork），优先 ES，未配置则回退 PG。
-// page 从 1 开始，pageSize 为每页条数，返回带总数与总页数的标准分页信封。
-func (s *Store) SearchAssets(ctx context.Context, q, docType string, page, pageSize int) (*SearchResult, error) {
-	root := parseQuery(q)
-	if s.es != nil {
-		esQuery := buildESQuery(root, docType, (page-1)*pageSize, pageSize)
-		if items, total, err := s.es.Search(ctx, esQuery); err == nil {
-			tp := pageSize
-			if tp <= 0 {
-				tp = 20
-			}
-			totalPages := 0
-			if tp > 0 && total > 0 {
-				totalPages = int((total + int64(tp) - 1) / int64(tp))
-			}
-			return &SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Items: items}, nil
-		}
-	}
-	return s.searchAssetsPG(ctx, root, docType, page, pageSize)
-}
-
-// buildESQuery 生成 ES 查询并注入分页（from/size）
-func buildESQuery(root node, docType string, from, size int) map[string]any {
+// BuildESQuery 生成 ES 查询并注入分页（from/size）。供 esasset 检索使用。
+func BuildESQuery(root node, docType string, from, size int) map[string]any {
 	must := []any{}
 	if docType != "" {
 		must = append(must, map[string]any{"term": map[string]any{"doc_type": docType}})
@@ -474,132 +448,4 @@ func buildESQuery(root node, docType string, from, size int) map[string]any {
 		return map[string]any{"query": map[string]any{"match_all": map[string]any{}}, "from": from, "size": size}
 	}
 	return map[string]any{"query": map[string]any{"bool": map[string]any{"must": must}}, "from": from, "size": size}
-}
-
-// scopeUnionSelect 生成单个 scope 的 SELECT，投影到 assetCols（缺列补 NULL）
-func scopeUnionSelect(scope, where string) string {
-	switch scope {
-	case "host":
-		return `SELECT 'host' doc_type, ip, NULL::int AS port, NULL::text AS proto, NULL::text AS name, org, os, asn, is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, NULL::text AS registrable_domain, NULL::text AS server FROM hosts WHERE ` + where
-	case "port":
-		return `SELECT 'port' doc_type, ip, port, proto, host AS name, NULL::text AS org, NULL::text AS os, NULL::int AS asn, NULL::bool AS is_ipv6, banner, title, service, version, NULL::text AS registrable_domain, webinfo->>'server' AS server FROM ports WHERE ` + where
-	case "domain":
-		return `SELECT 'domain' doc_type, NULL::text AS ip, NULL::int AS port, NULL::text AS proto, name, NULL::text AS org, NULL::text AS os, NULL::int AS asn, NULL::bool AS is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, registrable_domain, NULL::text AS server FROM domains WHERE ` + where
-	}
-	// 兜底（理论上不会命中）：返回空结果
-	return `SELECT 'host' doc_type, ip, NULL::int AS port, NULL::text AS proto, NULL::text AS name, org, os, asn, is_ipv6, NULL::text AS banner, NULL::text AS title, NULL::text AS service, NULL::text AS version, NULL::text AS registrable_domain, NULL::text AS server FROM hosts WHERE FALSE`
-}
-
-// searchAssetsPG PG 回退：以 host/port/domain 三表 UNION 实现统一、天然去重、分页检索。
-// 指定 docType 时退化为单表查询，性能最佳。各表唯一约束保证 UNION 行天然唯一（无同 IP 多行重复）。
-func (s *Store) searchAssetsPG(ctx context.Context, root node, docType string, page, pageSize int) (*SearchResult, error) {
-	scopes := []string{"host", "port", "domain"}
-	if docType != "" {
-		scopes = []string{docType}
-	}
-
-	var wArgs []any
-	branches := make([]string, 0, len(scopes))
-	for _, sc := range scopes {
-		where := "TRUE"
-		if root != nil {
-			where = root.toPG(sc, &wArgs)
-		}
-		branches = append(branches, scopeUnionSelect(sc, where))
-	}
-	union := strings.Join(branches, " UNION ALL ")
-
-	// 总数：外层 count(*) 覆盖 UNION 全部命中行
-	var acc []any
-	unionNumbered := renumber(union, wArgs, &acc)
-	var total int64
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM (`+unionNumbered+`) sub`, acc...).Scan(&total); err != nil {
-		return nil, err
-	}
-
-	// 分页数据：按 ip/port 稳定排序，domain 的 ip 为 NULL 排末尾
-	offset := (page - 1) * pageSize
-	dataSQL := `SELECT ` + assetCols + ` FROM (` + unionNumbered + `) sub ORDER BY ip NULLS LAST, port NULLS LAST LIMIT ? OFFSET ?`
-	dSQL := renumber(dataSQL, []any{pageSize, offset}, &acc)
-	rows, err := s.pool.Query(ctx, dSQL, acc...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]map[string]any, 0, pageSize)
-	for rows.Next() {
-		var (
-			docType string
-			ip      sql.NullString
-			port    sql.NullInt32
-			proto   sql.NullString
-			name    sql.NullString
-			org     sql.NullString
-			os      sql.NullString
-			asn     sql.NullInt32
-			isIPv6  sql.NullBool
-			banner  sql.NullString
-			title   sql.NullString
-			service sql.NullString
-			version sql.NullString
-			reg     sql.NullString
-			server  sql.NullString
-		)
-		if err := rows.Scan(&docType, &ip, &port, &proto, &name, &org, &os, &asn, &isIPv6,
-			&banner, &title, &service, &version, &reg, &server); err != nil {
-			return nil, err
-		}
-		m := map[string]any{"doc_type": docType}
-		if ip.Valid {
-			m["ip"] = ip.String
-		}
-		if port.Valid {
-			m["port"] = int(port.Int32)
-		}
-		if proto.Valid {
-			m["proto"] = proto.String
-		}
-		if name.Valid {
-			m["name"] = name.String
-		}
-		if org.Valid {
-			m["org"] = org.String
-		}
-		if os.Valid {
-			m["os"] = os.String
-		}
-		if asn.Valid {
-			m["asn"] = int(asn.Int32)
-		}
-		m["is_ipv6"] = isIPv6.Valid && isIPv6.Bool
-		if banner.Valid {
-			m["banner"] = banner.String
-		}
-		if title.Valid {
-			m["title"] = title.String
-		}
-		if service.Valid {
-			m["service"] = service.String
-		}
-		if version.Valid {
-			m["version"] = version.String
-		}
-		if reg.Valid {
-			m["registrable_domain"] = reg.String
-		}
-		if server.Valid {
-			m["server"] = server.String
-		}
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	totalPages := 0
-	if pageSize > 0 && total > 0 {
-		totalPages = int((total + int64(pageSize) - 1) / int64(pageSize))
-	}
-	return &SearchResult{Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages, Items: out}, nil
 }

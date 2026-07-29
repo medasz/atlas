@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,19 +15,9 @@ import (
 	"atlas/internal/model"
 )
 
-// Store PostgreSQL 仓储（资产/任务/漏洞/审计/黑名单等）
+// Store PostgreSQL 仓储（任务/漏洞/审计/黑名单/配置；资产本体已迁 Elasticsearch）
 type Store struct {
 	pool *pgxpool.Pool
-	es   *ESClient
-
-	mu        sync.Mutex
-	pendingES []pendingDoc // ES 索引失败待补队列
-}
-
-// pendingDoc ES 待补文档
-type pendingDoc struct {
-	id  string
-	doc map[string]any
 }
 
 // NewPostgres 建立连接池
@@ -43,45 +31,6 @@ func NewPostgres(ctx context.Context, dsn string) (*Store, error) {
 
 // Pool 暴露底层连接池（供其他层直接使用）
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
-
-// SetSearch 启用 Elasticsearch 同步（nil 表示仅用 PostgreSQL）
-func (s *Store) SetSearch(es *ESClient) { s.es = es }
-
-// indexAsset 写入 ES；失败则将文档入待补队列并标记 es_pending（资产不丢）
-func (s *Store) indexAsset(ctx context.Context, id string, doc map[string]any) {
-	if err := s.es.IndexAsset(ctx, id, doc); err == nil {
-		return
-	}
-	s.mu.Lock()
-	s.pendingES = append(s.pendingES, pendingDoc{id: id, doc: doc})
-	s.mu.Unlock()
-	if doc["doc_type"] == "host" {
-		_, _ = s.pool.Exec(ctx, `UPDATE hosts SET es_pending=true WHERE ip=$1`, doc["ip"])
-	} else {
-		_, _ = s.pool.Exec(ctx, `UPDATE ports SET es_pending=true WHERE ip=$1 AND port=$2`, doc["ip"], doc["port"])
-	}
-}
-
-// FlushPendingES 重试 ES 待补文档，成功后清除 es_pending 标记
-func (s *Store) FlushPendingES(ctx context.Context) {
-	s.mu.Lock()
-	pending := s.pendingES
-	s.pendingES = nil
-	s.mu.Unlock()
-	for _, p := range pending {
-		if err := s.es.IndexAsset(ctx, p.id, p.doc); err != nil {
-			s.mu.Lock()
-			s.pendingES = append(s.pendingES, p)
-			s.mu.Unlock()
-			continue
-		}
-		if p.doc["doc_type"] == "host" {
-			_, _ = s.pool.Exec(ctx, `UPDATE hosts SET es_pending=false WHERE ip=$1`, p.doc["ip"])
-		} else {
-			_, _ = s.pool.Exec(ctx, `UPDATE ports SET es_pending=false WHERE ip=$1 AND port=$2`, p.doc["ip"], p.doc["port"])
-		}
-	}
-}
 
 // Close 关闭连接池
 func (s *Store) Close() { s.pool.Close() }
@@ -148,130 +97,6 @@ func (s *Store) appliedMigrations(ctx context.Context) (map[string]bool, error) 
 	return m, rows.Err()
 }
 
-// UpsertHost 写入/更新主机资产（按 ip 冲突更新），并同步 ES
-func (s *Store) UpsertHost(ctx context.Context, h model.Host) error {
-	geo, _ := json.Marshal(h.Geo)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO hosts (ip, asn, org, geo, os, is_ipv6, open_ports, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT (ip) DO UPDATE SET
-			asn=EXCLUDED.asn, org=EXCLUDED.org, geo=EXCLUDED.geo, os=EXCLUDED.os,
-			is_ipv6=EXCLUDED.is_ipv6, open_ports=EXCLUDED.open_ports, last_seen=EXCLUDED.last_seen`,
-		h.IP, h.ASN, h.Org, geo, h.OS, h.IsIPv6, h.OpenPorts, h.FirstSeen, h.LastSeen)
-	if err != nil {
-		return err
-	}
-	if s.es != nil {
-		doc := map[string]any{
-			"doc_type":  "host",
-			"ip":        h.IP,
-			"asn":       h.ASN,
-			"org":       h.Org,
-			"os":        h.OS,
-			"is_ipv6":   h.IsIPv6,
-			"open_ports": h.OpenPorts,
-			"geo":       h.Geo,
-			"last_seen": h.LastSeen,
-		}
-		s.indexAsset(ctx, "host:"+h.IP, doc)
-	}
-	return nil
-}
-
-// UpsertPort 写入/更新端口资产（按 ip+port+proto 冲突更新），并同步 ES
-func (s *Store) UpsertPort(ctx context.Context, p model.Port) error {
-	cert, _ := json.Marshal(p.Cert)
-	web, _ := json.Marshal(p.WebInfo)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO ports (ip, port, proto, state, service, version, banner, cert, title, host, is_ipv6, webinfo, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		ON CONFLICT (ip, port, proto) DO UPDATE SET
-			state=EXCLUDED.state, service=EXCLUDED.service, version=EXCLUDED.version, banner=EXCLUDED.banner,
-			cert=EXCLUDED.cert, title=EXCLUDED.title, host=EXCLUDED.host, is_ipv6=EXCLUDED.is_ipv6,
-			webinfo=EXCLUDED.webinfo, last_seen=EXCLUDED.last_seen`,
-		p.IP, p.Port, p.Proto, p.State, p.Service, p.Version, p.Banner, cert, p.Title, p.Host, p.IsIPv6, web, p.FirstSeen, p.LastSeen)
-	if err != nil {
-		return err
-	}
-	if s.es != nil {
-		server, _ := p.WebInfo["server"].(string)
-		tech, _ := p.WebInfo["tech"].([]string)
-		doc := map[string]any{
-			"doc_type": "port",
-			"ip":       p.IP,
-			"port":     p.Port,
-			"proto":    p.Proto,
-			"state":    p.State,
-			"service":  p.Service,
-			"version":  p.Version,
-			"banner":   p.Banner,
-			"title":    p.Title,
-			"host":     p.Host,
-			"is_ipv6":  p.IsIPv6,
-			"server":   server,
-			"tech":     tech,
-			"last_seen": p.LastSeen,
-		}
-		s.indexAsset(ctx, "port:"+p.IP+":"+strconv.Itoa(p.Port), doc)
-	}
-	return nil
-}
-
-// UpsertDomain 写入/更新域名资产（按 name 冲突更新）
-func (s *Store) UpsertDomain(ctx context.Context, d model.Domain) error {
-	whois, _ := json.Marshal(d.Whois)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO domains (name, registrable_domain, resolved_ips, cname, org, asn, is_ipv6, whois, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (name) DO UPDATE SET
-			registrable_domain=EXCLUDED.registrable_domain, resolved_ips=EXCLUDED.resolved_ips,
-			cname=EXCLUDED.cname, org=EXCLUDED.org, asn=EXCLUDED.asn, is_ipv6=EXCLUDED.is_ipv6,
-			whois=EXCLUDED.whois, last_seen=EXCLUDED.last_seen`,
-		d.Name, d.RegistrableDomain, d.ResolvedIPs, d.CNAME, d.Org, d.ASN, d.IsIPv6, whois, d.FirstSeen, d.LastSeen)
-	if err != nil {
-		return err
-	}
-	if s.es != nil {
-		doc := map[string]any{
-			"doc_type":          "domain",
-			"name":              d.Name,
-			"host":              d.Name, // 复用 host 字段，使 host=/domain= 检索一致
-			"registrable_domain": d.RegistrableDomain,
-			"org":               d.Org,
-			"asn":               d.ASN,
-			"is_ipv6":           d.IsIPv6,
-			"last_seen":         d.LastSeen,
-		}
-		s.indexAsset(ctx, "domain:"+d.Name, doc)
-	}
-	return nil
-}
-
-// ListDomains 列出域名资产
-func (s *Store) ListDomains(ctx context.Context) ([]model.Domain, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT name, registrable_domain, resolved_ips, cname, org, asn, is_ipv6, whois, first_seen, last_seen
-		FROM domains ORDER BY last_seen DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []model.Domain{}
-	for rows.Next() {
-		var d model.Domain
-		var resolved, cname []string
-		var whois []byte
-		if err := rows.Scan(&d.Name, &d.RegistrableDomain, &resolved, &cname, &d.Org, &d.ASN, &d.IsIPv6, &whois, &d.FirstSeen, &d.LastSeen); err != nil {
-			return nil, err
-		}
-		d.ResolvedIPs = resolved
-		d.CNAME = cname
-		_ = json.Unmarshal(whois, &d.Whois)
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
 // InsertAudit 写入审计记录（审计开关由调用方控制）
 func (s *Store) InsertAudit(ctx context.Context, operator, target, taskID, action string) error {
 	_, err := s.pool.Exec(ctx, `
@@ -319,45 +144,6 @@ func (s *Store) BlacklistEntries(ctx context.Context) ([]model.BlacklistItem, er
 	return s.ListBlacklist(ctx)
 }
 
-// GetHost 按 IP 读取主机资产（含开放端口）
-func (s *Store) GetHost(ctx context.Context, ip string) (model.Host, error) {
-	var h model.Host
-	var geo, openPorts []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT ip, asn, org, geo, os, is_ipv6, open_ports, first_seen, last_seen
-		FROM hosts WHERE ip=$1`, ip).
-		Scan(&h.IP, &h.ASN, &h.Org, &geo, &h.OS, &h.IsIPv6, &openPorts, &h.FirstSeen, &h.LastSeen)
-	if err != nil {
-		return h, err
-	}
-	_ = json.Unmarshal(geo, &h.Geo)
-	_ = json.Unmarshal(openPorts, &h.OpenPorts)
-	return h, nil
-}
-
-// ListPortsByIP 列出某 IP 的全部端口资产（含 host/is_ipv6/指纹）
-func (s *Store) ListPortsByIP(ctx context.Context, ip string) ([]model.Port, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT ip, port, proto, service, version, title, banner, host, is_ipv6, webinfo
-		FROM ports WHERE ip=$1 ORDER BY port`, ip)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []model.Port{}
-	for rows.Next() {
-		var p model.Port
-		var web []byte
-		if err := rows.Scan(&p.IP, &p.Port, &p.Proto, &p.Service, &p.Version, &p.Title,
-			&p.Banner, &p.Host, &p.IsIPv6, &web); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal(web, &p.WebInfo)
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
 // ListVulnsByHost 列出某主机（及其各端口）关联的漏洞结果
 func (s *Store) ListVulnsByHost(ctx context.Context, ip string) ([]model.Vuln, error) {
 	rows, err := s.pool.Query(ctx, `
@@ -379,8 +165,6 @@ func (s *Store) ListVulnsByHost(ctx context.Context, ip string) ([]model.Vuln, e
 	}
 	return out, rows.Err()
 }
-
-// SearchAssets 见 query.go（表达式/Dork 检索，参考 FOFA 语法）
 
 // CreateTask 持久化任务
 func (s *Store) CreateTask(ctx context.Context, t model.Task) error {
@@ -597,3 +381,4 @@ func (s *Store) UpsertConfigSection(ctx context.Context, key, value string) erro
 	}
 	return nil
 }
+

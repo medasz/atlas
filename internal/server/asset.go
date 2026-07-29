@@ -1,8 +1,11 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+
+	"atlas/internal/assetstore"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,7 +28,7 @@ func (s *Server) searchAssets(c *gin.Context) {
 	if pageSize < 1 || pageSize > 200 {
 		pageSize = 20
 	}
-	res, err := s.deps.Store.SearchAssets(c.Request.Context(), q, docType, page, pageSize)
+	res, err := s.deps.Asset.SearchAssets(c.Request.Context(), q, docType, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -35,9 +38,13 @@ func (s *Server) searchAssets(c *gin.Context) {
 
 // getHost 按 IP 查询主机资产
 func (s *Server) getHost(c *gin.Context) {
-	h, err := s.deps.Store.GetHost(c.Request.Context(), c.Param("ip"))
-	if err != nil {
+	h, err := s.deps.Asset.GetHost(c.Request.Context(), c.Param("ip"))
+	if errors.Is(err, assetstore.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "host not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"host": h})
@@ -46,12 +53,15 @@ func (s *Server) getHost(c *gin.Context) {
 // getHostDetail 主机详情：主机 + 全部端口（含指纹/HTTP）+ 关联漏洞
 func (s *Server) getHostDetail(c *gin.Context) {
 	ip := c.Param("ip")
-	h, err := s.deps.Store.GetHost(c.Request.Context(), ip)
-	if err != nil {
+	h, ports, err := s.deps.Asset.GetHostDetail(c.Request.Context(), ip)
+	if errors.Is(err, assetstore.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "host not found"})
 		return
 	}
-	ports, _ := s.deps.Store.ListPortsByIP(c.Request.Context(), ip)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	vulns, _ := s.deps.Store.ListVulnsByHost(c.Request.Context(), ip)
 	c.JSON(http.StatusOK, gin.H{"host": h, "ports": ports, "vulns": vulns})
 }
