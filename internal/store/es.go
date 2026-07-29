@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -76,21 +77,35 @@ func (e *ESClient) CreateIndex(ctx context.Context) error {
 // doc 中应包含所有要写入的字段，first_seen 会在首次创建时自动设置，
 // 后续更新不会覆盖已有 first_seen。
 func (e *ESClient) UpdateAsset(ctx context.Context, id string, doc map[string]any) error {
-	// 分离 first_seen，用脚本保护
 	fs, hasFS := doc["first_seen"]
-	delete(doc, "first_seen")
 
-	bodyMap := map[string]any{
-		"doc":           doc,
-		"doc_as_upsert": true,
+	// 浅拷贝 doc，避免修改调用方传入的 map（消除副作用与并发冲突）
+	docParams := make(map[string]any, len(doc))
+	upsertDoc := make(map[string]any, len(doc))
+	for k, v := range doc {
+		upsertDoc[k] = v
+		if k != "first_seen" {
+			docParams[k] = v
+		}
+	}
+
+	scriptSource := "for (entry in params.doc.entrySet()) { ctx._source[entry.getKey()] = entry.getValue() }"
+	paramsMap := map[string]any{
+		"doc": docParams,
 	}
 	if hasFS {
-		// 使用 painless 脚本确保 first_seen 仅创建时写入
-		bodyMap["script"] = map[string]any{
-			"source": "if (ctx._source.first_seen == null) { ctx._source.first_seen = params.fs }",
+		scriptSource = "if (ctx._source.first_seen == null && params.fs != null) { ctx._source.first_seen = params.fs } " + scriptSource
+		paramsMap["fs"] = fs
+	}
+
+	bodyMap := map[string]any{
+		"script": map[string]any{
+			"source": scriptSource,
 			"lang":   "painless",
-			"params": map[string]any{"fs": fs},
-		}
+			"params": paramsMap,
+		},
+		"upsert":          upsertDoc,
+		"scripted_upsert": true,
 	}
 
 	body, err := json.Marshal(bodyMap)
@@ -113,7 +128,16 @@ func (e *ESClient) UpdateAsset(ctx context.Context, id string, doc map[string]an
 		if resp.StatusCode == http.StatusConflict {
 			return nil
 		}
-		return fmt.Errorf("es update status %d for id %s", resp.StatusCode, id)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var errResp struct {
+			Error struct {
+				Reason string `json:"reason"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Reason != "" {
+			return fmt.Errorf("es update status %d for id %s: %s", resp.StatusCode, id, errResp.Error.Reason)
+		}
+		return fmt.Errorf("es update status %d for id %s: %s", resp.StatusCode, id, string(respBody))
 	}
 	return nil
 }
@@ -202,7 +226,7 @@ func (e *ESClient) Get(ctx context.Context, id string) (map[string]any, error) {
 		return nil, fmt.Errorf("es get status %d", resp.StatusCode)
 	}
 	var out struct {
-		Found  bool         `json:"found"`
+		Found  bool           `json:"found"`
 		Source map[string]any `json:"_source"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -255,5 +279,3 @@ func (e *ESClient) Count(ctx context.Context) (int64, error) {
 	}
 	return out.Count, nil
 }
-
-
