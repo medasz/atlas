@@ -17,8 +17,9 @@ type Task struct {
 	Scope     map[string]any `json:"scope"`
 	Schedule  map[string]any `json:"schedule"`
 	RateLimit map[string]any `json:"rate_limit"`
-	Status    int            `json:"status"` // 0 pending 1 running 2 done
+	Status    int            `json:"status"` // 0 pending 1 running 2 done 3 paused 4 failed
 	Progress  map[string]int `json:"progress"`
+	Error     string         `json:"error,omitempty"` // 失败原因
 	CreatedAt time.Time      `json:"created_at"`
 }
 
@@ -38,22 +39,28 @@ type Vuln struct {
 
 // TaskItem 任务子项（断点续扫单元，粒度可细化到端口块）
 type TaskItem struct {
-	TaskID string         `json:"task_id"`
-	Target string         `json:"target"`
-	Ports  string         `json:"ports"`   // 端口块规格，如 "1-1000"；域名/空块为 ""
-	Status int            `json:"status"` // 0 pending 1 done 2 filtered
-	Result map[string]any `json:"result"`
+	TaskID    string         `json:"task_id"`
+	Target    string         `json:"target"`
+	Ports     string         `json:"ports"`     // 端口块规格，如 "1-1000"；域名/空块为 ""
+	Status    int            `json:"status"`    // 0 pending 1 processing 2 done 3 filtered 4 failed
+	Result    map[string]any `json:"result"`
+	Error     string         `json:"error,omitempty"`
+	Attempts  int            `json:"attempts,omitempty"`
+	LeaseUntil *time.Time    `json:"lease_until,omitempty"`
 }
 
 // Task status 常量
 const (
-	TaskPending  = 0
-	TaskRunning  = 1
-	TaskDone     = 2
-	TaskPaused   = 3
-	TaskItemPending  = 0
-	TaskItemDone     = 1
-	TaskItemFiltered = 2
+	TaskPending     = 0
+	TaskRunning     = 1
+	TaskDone        = 2
+	TaskPaused      = 3
+	TaskFailed      = 4
+	TaskItemPending    = 0
+	TaskItemProcessing = 1
+	TaskItemDone       = 2
+	TaskItemFiltered   = 3
+	TaskItemFailed     = 4
 )
 
 // Task 类型

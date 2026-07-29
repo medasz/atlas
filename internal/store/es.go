@@ -46,6 +46,7 @@ const assetMapping = `{
       "org":      { "type": "keyword" },
       "geo":      { "type": "object" },
       "is_ipv6":  { "type": "boolean" },
+      "first_seen":{ "type": "date" },
       "last_seen":{ "type": "date" }
     }
   }
@@ -71,8 +72,56 @@ func (e *ESClient) CreateIndex(ctx context.Context) error {
 	return nil
 }
 
-// IndexAsset 写入/更新资产文档（_id 由调用方保证唯一，如 ip:port）
-func (e *ESClient) IndexAsset(ctx context.Context, id string, doc map[string]any) error {
+// UpdateAsset 合并更新资产文档，使用脚本化更新确保 first_seen 仅创建时设置。
+// doc 中应包含所有要写入的字段，first_seen 会在首次创建时自动设置，
+// 后续更新不会覆盖已有 first_seen。
+func (e *ESClient) UpdateAsset(ctx context.Context, id string, doc map[string]any) error {
+	// 分离 first_seen，用脚本保护
+	fs, hasFS := doc["first_seen"]
+	delete(doc, "first_seen")
+
+	bodyMap := map[string]any{
+		"doc":           doc,
+		"doc_as_upsert": true,
+	}
+	if hasFS {
+		// 使用 painless 脚本确保 first_seen 仅创建时写入
+		bodyMap["script"] = map[string]any{
+			"source": "if (ctx._source.first_seen == null) { ctx._source.first_seen = params.fs }",
+			"lang":   "painless",
+			"params": map[string]any{"fs": fs},
+		}
+	}
+
+	body, err := json.Marshal(bodyMap)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/%s/_update/%s", e.addr, e.index, id), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		// 409 版本冲突通常无害
+		if resp.StatusCode == http.StatusConflict {
+			return nil
+		}
+		return fmt.Errorf("es update status %d for id %s", resp.StatusCode, id)
+	}
+	return nil
+}
+
+// UpsertAsset 写入/更新资产文档（兼容旧接口，使用 PUT 全量替换）。
+// 注意：此方法会覆盖整个 _source，不保留未携带的字段。
+// 推荐使用 UpdateAsset 替代。
+func (e *ESClient) UpsertAsset(ctx context.Context, id string, doc map[string]any) error {
 	body, err := json.Marshal(doc)
 	if err != nil {
 		return err

@@ -15,10 +15,12 @@ type ESAssetStore struct{ es *store.ESClient }
 // New 构造 ES 资产存储
 func New(es *store.ESClient) *ESAssetStore { return &ESAssetStore{es: es} }
 
-// Upsert 写入/更新资产（统一 model.Asset；_id 由 model.AssetID 决定）
+// Upsert 写入/更新资产（使用 ES _update + doc_as_upsert + painless 脚本实现字段级合并语义）。
+// first_seen 由服务端脚本保证仅在首次创建时设置，后续更新不会覆盖。
+// last_seen 每次随 doc 写入更新。
 func (s *ESAssetStore) Upsert(ctx context.Context, a model.Asset) error {
 	doc := assetToDoc(a)
-	return s.es.IndexAsset(ctx, model.AssetID(a), doc)
+	return s.es.UpdateAsset(ctx, model.AssetID(a), doc)
 }
 
 // assetToDoc 将统一 Asset 转为 ES 文档；跳过零值以减小体积

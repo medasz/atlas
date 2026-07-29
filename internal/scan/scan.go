@@ -209,8 +209,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 				Banner:  banner,
 				Host:    ip,
 				IsIPv6:  isV6,
-				FirstSeen: time.Now(),
-				LastSeen:  time.Now(),
+				LastSeen: time.Now(),
 			}
 			sc.httpEnrich(ip, p, banner, &portAsset)
 			sc.upsert(ctx, portAsset)

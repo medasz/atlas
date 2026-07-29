@@ -41,30 +41,52 @@ func (s *Store) Close() { s.pool.Close() }
 // CREATE TABLE IF NOT EXISTS 在并发下存在竞态（检查存在与创建类型非原子），
 // 可能导致 pg_type_typname_nsp_index 唯一约束冲突（duplicate key）。
 // 因此这里：
-//  1. 在事务开始时获取事务级 advisory 锁，保证同一时刻只有一个实例在迁移，
-//     其余实例阻塞至对方提交后再以“已应用”状态跳过；
-//  2. 整个迁移在一个事务内完成，单个迁移文件失败即整体回滚，
-//     不会残留半截的表/类型等孤儿对象。
-func (s *Store) RunMigrations(ctx context.Context, dir string) error {
-	if err := s.ensureMigrationsTable(ctx); err != nil {
-		return err
-	}
-	tx, err := s.pool.Begin(ctx)
+//  1. 从连接池获取专用连接，在连接上获取 session-level advisory 锁，
+//     保证同一时刻只有一个实例在迁移，其余实例阻塞至对方解锁；
+//  2. 持锁覆盖 schema_migrations 表创建、已应用版本读取与全部迁移；
+//  3. 使用不受调用方 context 取消影响的短时 context 调用 pg_advisory_unlock；
+//  4. 每个迁移文件的 SQL 与 schema_migrations 登记在独立事务内，
+//     文件级失败不回滚已成功的其他迁移。
+func (s *Store) RunMigrations(ctx context.Context, dir string) (retErr error) {
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
+		return fmt.Errorf("acquire migration conn: %w", err)
 	}
-	defer tx.Rollback(ctx)
 
-	// 串行化多实例迁移；未获锁的实例会阻塞至对方提交。
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(916873245)`); err != nil {
+	// 串行化多实例迁移；session-level 锁在显式 unlock 前持续持有，
+	// 覆盖整个迁移流程（表创建、已应用读取、全部迁移执行）。
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(916873245)`); err != nil {
+		conn.Release()
 		return fmt.Errorf("migration lock: %w", err)
+	}
+
+	// defer unlock + release：使用 Background 派生短时 context，
+	// 避免调用方 context 已取消时 unlock 无法发送。
+	defer func() {
+		uc, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(uc, `SELECT pg_advisory_unlock(916873245)`); err != nil && retErr == nil {
+			retErr = fmt.Errorf("migration unlock: %w", err)
+		}
+		conn.Release()
+	}()
+
+	// 创建 schema_migrations 表（持锁期间安全）
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			name        TEXT PRIMARY KEY,
+			applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("ensure migrations table: %w", err)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	rows, err := tx.Query(ctx, `SELECT name FROM schema_migrations`)
+
+	// 读已应用版本（持锁期间视图一致）
+	rows, err := conn.Query(ctx, `SELECT name FROM schema_migrations`)
 	if err != nil {
 		return fmt.Errorf("read applied migrations: %w", err)
 	}
@@ -92,29 +114,29 @@ func (s *Store) RunMigrations(ctx context.Context, dir string) error {
 		}
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return err
+			return fmt.Errorf("read migration %s: %w", name, err)
 		}
+
+		// 每个迁移在独立事务内执行，失败时回滚不影响其他迁移
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", name, err)
+		}
+
 		if _, err := tx.Exec(ctx, string(data)); err != nil {
+			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO schema_migrations(name, applied_at) VALUES($1,$2)`, name, time.Now()); err != nil {
-			return err
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("register migration %s: %w", name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit migrations: %w", err)
-	}
 	return nil
-}
-
-func (s *Store) ensureMigrationsTable(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			name TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`)
-	return err
 }
 
 // InsertAudit 写入审计记录（审计开关由调用方控制）
@@ -401,4 +423,3 @@ func (s *Store) UpsertConfigSection(ctx context.Context, key, value string) erro
 	}
 	return nil
 }
-
