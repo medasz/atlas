@@ -6,9 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
 	"atlas/internal/audit"
 	"atlas/internal/blacklist"
@@ -63,50 +61,6 @@ func main() {
 	es := store.NewES(cfg.Elastic.Addr, cfg.Elastic.Index)
 	if err := es.CreateIndex(ctx); err != nil {
 		log.Printf("elasticsearch init warning: %v", err)
-	} else {
-		// 注册快照仓库 + 空索引自动恢复（恢复最新 auto-<时间戳> 快照）+ 周期快照
-		if err := es.RegisterSnapshotRepo(ctx, "atlas_backup", "/backups"); err != nil {
-			log.Printf("register snapshot repo failed: %v", err)
-		} else {
-			log.Println("snapshot repo ready")
-		}
-		cnt, cerr := es.Count(ctx)
-		if cerr != nil {
-			log.Printf("es count failed (skip auto restore): %v", cerr)
-		} else if cnt == 0 {
-			names, lerr := es.ListSnapshots(ctx, "atlas_backup")
-			if lerr != nil {
-				log.Printf("auto restore skipped, list snapshots failed: %v", lerr)
-			} else {
-				var latest string
-				for _, n := range names {
-					if strings.HasPrefix(n, "auto-") && n > latest {
-						latest = n
-					}
-				}
-				if latest != "" {
-					if err := es.Restore(ctx, "atlas_backup", latest); err != nil {
-						log.Printf("auto restore failed: %v", err)
-					} else {
-						log.Println("elasticsearch restored from snapshot")
-					}
-				} else {
-					log.Println("no auto snapshot available to restore")
-				}
-			}
-		} else {
-			log.Printf("es has %d assets, skip auto restore", cnt)
-		}
-		go func() {
-			ticker := time.NewTicker(6 * time.Hour)
-			defer ticker.Stop()
-			for range ticker.C {
-				ts := time.Now().Format("20060102-150405")
-				if err := es.Snapshot(ctx, "atlas_backup", "auto-"+ts); err != nil {
-					log.Printf("snapshot failed: %v", err)
-				}
-			}
-		}()
 	}
 	// 资产存储：ES 唯一实现
 	assetStore := esasset.New(es)
