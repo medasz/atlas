@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -128,4 +129,159 @@ func (e *ESClient) Search(ctx context.Context, query map[string]any) ([]map[stri
 		items = append(items, h.Source)
 	}
 	return items, out.Hits.Total.Value, nil
+}
+
+// ErrNotFound 文档不存在（Get 404 映射）
+var ErrNotFound = errors.New("es document not found")
+
+// Get 按 _id 读取文档；404 或 found=false 返回 ErrNotFound
+func (e *ESClient) Get(ctx context.Context, id string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/%s/_doc/%s", e.addr, e.index, id), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("es get status %d", resp.StatusCode)
+	}
+	var out struct {
+		Found  bool         `json:"found"`
+		Source map[string]any `json:"_source"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if !out.Found {
+		return nil, ErrNotFound
+	}
+	return out.Source, nil
+}
+
+// Delete 按 _id 删除文档（忽略 404）
+func (e *ESClient) Delete(ctx context.Context, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		fmt.Sprintf("%s/%s/_doc/%s", e.addr, e.index, id), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("es delete status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Count 返回索引文档总数
+func (e *ESClient) Count(ctx context.Context) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/%s/_count", e.addr, e.index), nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("es count status %d", resp.StatusCode)
+	}
+	var out struct {
+		Count int64 `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.Count, nil
+}
+
+// RegisterSnapshotRepo 注册 fs 类型快照仓库（已存在则忽略 400）
+func (e *ESClient) RegisterSnapshotRepo(ctx context.Context, name, location string) error {
+	body, _ := json.Marshal(map[string]any{
+		"type":     "fs",
+		"settings": map[string]any{"location": location},
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/_snapshot/%s", e.addr, name), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusBadRequest {
+		return fmt.Errorf("es register snapshot repo status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Snapshot 对 assets 索引打快照
+func (e *ESClient) Snapshot(ctx context.Context, repo, snap string) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/_snapshot/%s/%s", e.addr, repo, snap), nil)
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("es snapshot status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// SnapshotExists 判断指定快照是否存在
+func (e *ESClient) SnapshotExists(ctx context.Context, repo, snap string) bool {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/_snapshot/%s/%s", e.addr, repo, snap), nil)
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// Restore 从快照恢复 assets 索引（先关后开）
+func (e *ESClient) Restore(ctx context.Context, repo, snap string) error {
+	closeReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/%s/_close", e.addr, e.index), nil)
+	if cr, err := e.http.Do(closeReq); err == nil {
+		cr.Body.Close()
+	}
+	body, _ := json.Marshal(map[string]any{"indices": e.index})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/_snapshot/%s/%s/_restore", e.addr, repo, snap), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("es restore status %d", resp.StatusCode)
+	}
+	openReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/%s/_open", e.addr, e.index), nil)
+	if err != nil {
+		return fmt.Errorf("es restore open request: %w", err)
+	}
+	resp2, err := e.http.Do(openReq)
+	if err != nil {
+		return fmt.Errorf("es restore reopen index: %w", err)
+	}
+	resp2.Body.Close()
+	return nil
 }
