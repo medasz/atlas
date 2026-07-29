@@ -1,2 +1,0 @@
-ALTER TABLE ports DROP COLUMN IF EXISTS es_pending;
-ALTER TABLE hosts DROP COLUMN IF EXISTS es_pending;
