@@ -2,7 +2,9 @@ package esasset
 
 import (
 	"context"
+	"errors"
 
+	"atlas/internal/assetstore"
 	"atlas/internal/model"
 	"atlas/internal/store"
 )
@@ -101,4 +103,167 @@ func assetToDoc(a model.Asset) map[string]any {
 		m["last_seen"] = a.LastSeen
 	}
 	return m
+}
+
+// GetHost 按 IP 读取主机资产；未找到返回 assetstore.ErrNotFound
+func (s *ESAssetStore) GetHost(ctx context.Context, ip string) (model.Asset, error) {
+	src, err := s.es.Get(ctx, "host:"+ip)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return model.Asset{}, assetstore.ErrNotFound
+		}
+		return model.Asset{}, err
+	}
+	return assetFromSource(src), nil
+}
+
+// ListPortsByIP 列出某 IP 的全部端口（按 port 升序）
+func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error) {
+	q := map[string]any{
+		"query": map[string]any{"bool": map[string]any{"must": []any{
+			map[string]any{"term": map[string]any{"doc_type": "port"}},
+			map[string]any{"term": map[string]any{"ip": ip}},
+		}}},
+		"sort":  []any{map[string]any{"port": map[string]any{"order": "asc"}}},
+		"size":  10000,
+	}
+	items, _, err := s.es.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Asset, 0, len(items))
+	for _, it := range items {
+		out = append(out, assetFromSource(it))
+	}
+	return out, nil
+}
+
+// ListDomains 列出全部域名（按 last_seen 倒序）
+func (s *ESAssetStore) ListDomains(ctx context.Context) ([]model.Asset, error) {
+	q := map[string]any{
+		"query": map[string]any{"term": map[string]any{"doc_type": "domain"}},
+		"sort":  []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
+		"size":  10000,
+	}
+	items, _, err := s.es.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Asset, 0, len(items))
+	for _, it := range items {
+		out = append(out, assetFromSource(it))
+	}
+	return out, nil
+}
+
+// GetHostDetail 主机 + 全部端口（漏洞由调用方从 PG 取）
+func (s *ESAssetStore) GetHostDetail(ctx context.Context, ip string) (model.Asset, []model.Asset, error) {
+	h, err := s.GetHost(ctx, ip)
+	if err != nil {
+		return model.Asset{}, nil, err
+	}
+	ports, err := s.ListPortsByIP(ctx, ip)
+	if err != nil {
+		return h, nil, err
+	}
+	return h, ports, nil
+}
+
+// assetFromSource 从 ES _source 还原统一 Asset
+func assetFromSource(m map[string]any) model.Asset {
+	a := model.Asset{}
+	if v, ok := m["doc_type"].(string); ok {
+		a.Kind = model.AssetKind(v)
+	}
+	if v, ok := m["ip"].(string); ok {
+		a.IP = v
+	}
+	if v, ok := m["port"].(float64); ok {
+		a.Port = int(v)
+	}
+	if v, ok := m["proto"].(string); ok {
+		a.Proto = v
+	}
+	if v, ok := m["domain"].(string); ok {
+		a.Domain = v
+	}
+	if v, ok := m["host"].(string); ok {
+		a.Host = v
+	}
+	if v, ok := m["asn"].(float64); ok {
+		a.ASN = int(v)
+	}
+	if v, ok := m["org"].(string); ok {
+		a.Org = v
+	}
+	if v, ok := m["os"].(string); ok {
+		a.OS = v
+	}
+	if v, ok := m["is_ipv6"].(bool); ok {
+		a.IsIPv6 = v
+	}
+	if v, ok := m["state"].(string); ok {
+		a.State = v
+	}
+	if v, ok := m["service"].(string); ok {
+		a.Service = v
+	}
+	if v, ok := m["version"].(string); ok {
+		a.Version = v
+	}
+	if v, ok := m["banner"].(string); ok {
+		a.Banner = v
+	}
+	if v, ok := m["title"].(string); ok {
+		a.Title = v
+	}
+	if v, ok := m["server"].(string); ok {
+		a.Server = v
+	}
+	if v, ok := m["tech"].([]any); ok {
+		ts := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				ts = append(ts, s)
+			}
+		}
+		a.Tech = ts
+	}
+	if v, ok := m["registrable_domain"].(string); ok {
+		a.RegistrableDomain = v
+	}
+	if v, ok := m["resolved_ips"].([]any); ok {
+		rs := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				rs = append(rs, s)
+			}
+		}
+		a.ResolvedIPs = rs
+	}
+	if v, ok := m["cname"].([]any); ok {
+		cs := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				cs = append(cs, s)
+			}
+		}
+		a.CNAME = cs
+	}
+	if v, ok := m["open_ports"].(float64); ok {
+		a.OpenPorts = int(v)
+	}
+	if v, ok := m["cert"].(map[string]any); ok {
+		a.Cert = v
+	}
+	if v, ok := m["webinfo"].(map[string]any); ok {
+		a.WebInfo = v
+	}
+	if v, ok := m["geo"].(map[string]any); ok {
+		a.Geo = v
+	}
+	if v, ok := m["whois"].(map[string]any); ok {
+		a.Whois = v
+	}
+	return a
 }
