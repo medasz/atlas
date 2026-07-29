@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"atlas/internal/assetstore"
 	"atlas/internal/audit"
 	"atlas/internal/blacklist"
 	"atlas/internal/config"
@@ -24,6 +25,7 @@ import (
 type Deps struct {
 	Cfg        *config.Config
 	Store      *store.Store
+	Asset      assetstore.AssetStore
 	Queue      *queue.Queue
 	Audit      *audit.Auditor
 	Rate       *ratelimit.Limiter
