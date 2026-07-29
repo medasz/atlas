@@ -267,3 +267,26 @@ func assetFromSource(m map[string]any) model.Asset {
 	}
 	return a
 }
+
+// SearchAssets 资产检索（仅 ES），标准分页
+func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, page, pageSize int) (*store.SearchResult, error) {
+	root := store.ParseQuery(q)
+	from := (page - 1) * pageSize
+	if from < 0 {
+		from = 0
+	}
+	query := store.BuildESQuery(root, kind, from, pageSize)
+	items, total, err := s.es.Search(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	tp := pageSize
+	if tp <= 0 {
+		tp = 20
+	}
+	totalPages := 0
+	if tp > 0 && total > 0 {
+		totalPages = int((total + int64(tp) - 1) / int64(tp))
+	}
+	return &store.SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Items: items}, nil
+}

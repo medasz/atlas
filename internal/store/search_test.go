@@ -5,7 +5,7 @@ import (
 )
 
 func TestParseQueryFieldOp(t *testing.T) {
-	c, ok := parseQuery(`ip="1.1.1.1"`).(cmpNode)
+	c, ok := ParseQuery(`ip="1.1.1.1"`).(cmpNode)
 	if !ok || c.field != "ip" || c.op != "=" || c.val != "1.1.1.1" {
 		t.Fatalf("unexpected cmp: %#v", c)
 	}
@@ -17,7 +17,7 @@ func TestParseQueryFieldOp(t *testing.T) {
 }
 
 func TestParseQueryAndOr(t *testing.T) {
-	root := parseQuery(`ip="1.1.1.1" && port="443"`)
+	root := ParseQuery(`ip="1.1.1.1" && port="443"`)
 	if _, ok := root.(andNode); !ok {
 		t.Fatalf("expected andNode, got %T", root)
 	}
@@ -27,7 +27,7 @@ func TestParseQueryAndOr(t *testing.T) {
 		t.Fatalf("expected bool.must len 2, got %#v", es)
 	}
 
-	root = parseQuery(`title="a" || server="b"`)
+	root = ParseQuery(`title="a" || server="b"`)
 	if _, ok := root.(orNode); !ok {
 		t.Fatalf("expected orNode, got %T", root)
 	}
@@ -39,7 +39,7 @@ func TestParseQueryAndOr(t *testing.T) {
 }
 
 func TestParseQueryNotAndWildcard(t *testing.T) {
-	c := parseQuery(`ip!="1.1.1.1"`).(cmpNode)
+	c := ParseQuery(`ip!="1.1.1.1"`).(cmpNode)
 	if c.op != "!=" {
 		t.Fatalf("expected !=, got %s", c.op)
 	}
@@ -48,7 +48,7 @@ func TestParseQueryNotAndWildcard(t *testing.T) {
 		t.Fatalf("expected must_not, got %#v", es)
 	}
 
-	w := parseQuery(`ip*="1.1.1.*"`).(cmpNode)
+	w := ParseQuery(`ip*="1.1.1.*"`).(cmpNode)
 	wes := w.toES()
 	if _, ok := wes["wildcard"]; !ok {
 		t.Fatalf("expected wildcard, got %#v", wes)
@@ -56,7 +56,7 @@ func TestParseQueryNotAndWildcard(t *testing.T) {
 }
 
 func TestParseQueryParens(t *testing.T) {
-	root := parseQuery(`(ip="1.1.1.1" || ip="2.2.2.2") && port="443"`)
+	root := ParseQuery(`(ip="1.1.1.1" || ip="2.2.2.2") && port="443"`)
 	and, ok := root.(andNode)
 	if !ok {
 		t.Fatalf("expected andNode, got %T", root)
@@ -67,7 +67,7 @@ func TestParseQueryParens(t *testing.T) {
 }
 
 func TestParseQueryBareAndPG(t *testing.T) {
-	c := parseQuery(`nginx`).(cmpNode)
+	c := ParseQuery(`nginx`).(cmpNode)
 	if c.field != "_all" || c.val != "nginx" {
 		t.Fatalf("expected _all nginx, got %#v", c)
 	}
@@ -79,7 +79,7 @@ func TestParseQueryBareAndPG(t *testing.T) {
 	// 端口字段在 port 作用域应映射到具体列（数值精确匹配）
 	{
 		var a []any
-		p := parseQuery(`port="443"`).(cmpNode)
+		p := ParseQuery(`port="443"`).(cmpNode)
 		if sql := p.toPG("port", &a); sql != "port = $1" {
 			t.Fatalf("expected port = $1, got %q", sql)
 		}
@@ -94,7 +94,7 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 	// host 字段在 port 作用域映射到 host 文本列（文本用 ILIKE 包含匹配）
 	{
 		var acc []any
-		h := parseQuery(`host="example.com"`).(cmpNode)
+		h := ParseQuery(`host="example.com"`).(cmpNode)
 		if sql := h.toPG("port", &acc); sql != "host ILIKE $1" {
 			t.Fatalf("expected host ILIKE $1, got %q", sql)
 		}
@@ -106,7 +106,7 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 	// domain 字段在 port 作用域映射到 host 列
 	{
 		var acc []any
-		d := parseQuery(`domain="example.com"`).(cmpNode)
+		d := ParseQuery(`domain="example.com"`).(cmpNode)
 		if sql := d.toPG("port", &acc); sql != "host ILIKE $1" {
 			t.Fatalf("expected host ILIKE $1 for domain, got %q", sql)
 		}
@@ -118,7 +118,7 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 	// is_ipv6 布尔字段
 	{
 		var acc []any
-		v := parseQuery(`is_ipv6=true`).(cmpNode)
+		v := ParseQuery(`is_ipv6=true`).(cmpNode)
 		if sql := v.toPG("port", &acc); sql != "is_ipv6 = $1" {
 			t.Fatalf("expected is_ipv6 = $1, got %q", sql)
 		}
@@ -128,7 +128,7 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 			t.Fatalf("expected term is_ipv6 true, got %#v", ves)
 		}
 		// is_ipv6 != 渲染为 must_not
-		vn := parseQuery(`is_ipv6!=false`).(cmpNode)
+		vn := ParseQuery(`is_ipv6!=false`).(cmpNode)
 		if _, ok := vn.toES()["bool"]; !ok {
 			t.Fatalf("expected bool.must_not for is_ipv6!=, got %#v", vn.toES())
 		}
@@ -136,7 +136,7 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 	// protocol/base_protocol 映射到 proto 列
 	{
 		var acc []any
-		pr := parseQuery(`protocol="tcp"`).(cmpNode)
+		pr := ParseQuery(`protocol="tcp"`).(cmpNode)
 		if sql := pr.toPG("port", &acc); sql != "proto ILIKE $1" {
 			t.Fatalf("expected proto ILIKE $1, got %q", sql)
 		}
