@@ -15,6 +15,7 @@ import (
 	"atlas/internal/fingerprint"
 	"atlas/internal/queue"
 	"atlas/internal/ratelimit"
+	"atlas/internal/esasset"
 	"atlas/internal/scan"
 	"atlas/internal/server"
 	"atlas/internal/store"
@@ -57,22 +58,35 @@ func main() {
 		log.Fatalf("load config from db: %v", err)
 	}
 
-	// Elasticsearch 检索（连接失败则仅用 PostgreSQL，自动回退）
+	// Elasticsearch 成为资产唯一存储（不再回退 PG 资产）
 	es := store.NewES(cfg.Elastic.Addr, cfg.Elastic.Index)
 	if err := es.CreateIndex(ctx); err != nil {
-		log.Printf("elasticsearch unavailable, search falls back to postgres: %v", err)
+		log.Printf("elasticsearch init warning: %v", err)
 	} else {
-		st.SetSearch(es)
-		log.Println("elasticsearch sync enabled")
-		// 后台周期重试 ES 同步失败的待补文档
+		// 注册快照仓库 + 空索引自动恢复 + 周期快照
+		if err := es.RegisterSnapshotRepo(ctx, "atlas_backup", "/backups"); err != nil {
+			log.Printf("register snapshot repo: %v", err)
+		}
+		if cnt, _ := es.Count(ctx); cnt == 0 && es.SnapshotExists(ctx, "atlas_backup", "auto") {
+			if err := es.Restore(ctx, "atlas_backup", "auto"); err != nil {
+				log.Printf("auto restore failed: %v", err)
+			} else {
+				log.Println("elasticsearch restored from snapshot")
+			}
+		}
 		go func() {
-			ticker := time.NewTicker(30 * time.Second)
+			ticker := time.NewTicker(6 * time.Hour)
 			defer ticker.Stop()
 			for range ticker.C {
-				st.FlushPendingES(context.Background())
+				ts := time.Now().Format("20060102-150405")
+				if err := es.Snapshot(ctx, "atlas_backup", "auto-"+ts); err != nil {
+					log.Printf("snapshot failed: %v", err)
+				}
 			}
 		}()
 	}
+	// 资产存储：ES 唯一实现
+	assetStore := esasset.New(es)
 
 	// 审计（开关由配置控制）
 	auditor := audit.New(st, cfg.Audit.Enabled)
@@ -115,7 +129,7 @@ func main() {
 	taskSvc := task.New(st, q, auditor, bl, limiter, cfg.Scan.MaxConcurrency, defaultPorts, cfg.Scan.PortChunkSize)
 
 	// 资产探测引擎（Issue #4）：注入为资产扫描处理器，传入扫描配置（模式 + raw 参数）
-	scanner := scan.New(st, limiter, defaultPorts, fp, cfg.Scan)
+	scanner := scan.New(assetStore, limiter, defaultPorts, fp, cfg.Scan)
 	taskSvc.SetProcessor(scanner)
 
 	// 漏洞检测引擎（Issue #10~#13）：加载目录模板 + 已持久化模板
@@ -140,6 +154,7 @@ func main() {
 	srv := server.New(server.Deps{
 		Cfg:        cfg,
 		Store:      st,
+		Asset:      assetStore,
 		Queue:      q,
 		Audit:      auditor,
 		Rate:       limiter,
