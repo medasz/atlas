@@ -14,6 +14,16 @@ func (s *Server) registerAssets(g *gin.RouterGroup) {
 	g.GET("/assets", s.searchAssets)
 	g.GET("/hosts/:ip", s.getHost)
 	g.GET("/hosts/:ip/detail", s.getHostDetail)
+	g.POST("/admin/reindex", s.adminReindex)
+}
+
+// adminReindex 把 PostgreSQL 资产一次性回填到 Elasticsearch（迁移期手动触发）
+func (s *Server) adminReindex(c *gin.Context) {
+	if err := assetstore.ReindexFromPG(c.Request.Context(), s.deps.Store, s.deps.Asset); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "reindexed"})
 }
 
 // searchAssets 资产检索（ES 优先，未配置则 PG 回退），支持 page/page_size 标准分页

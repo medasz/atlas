@@ -381,3 +381,76 @@ func (s *Store) UpsertConfigSection(ctx context.Context, key, value string) erro
 	}
 	return nil
 }
+
+// ListAllHosts 全量读取主机资产（过渡期供 ReindexFromPG 灌入 ES 后删除）
+func (s *Store) ListAllHosts(ctx context.Context) ([]model.Host, error) {
+	rows, err := s.pool.Query(ctx, `SELECT ip, asn, org, geo, os, open_ports, is_ipv6, first_seen, last_seen FROM hosts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.Host{}
+	for rows.Next() {
+		var h model.Host
+		var geo []byte
+		if err := rows.Scan(&h.IP, &h.ASN, &h.Org, &geo, &h.OS, &h.OpenPorts, &h.IsIPv6, &h.FirstSeen, &h.LastSeen); err != nil {
+			return nil, err
+		}
+		if len(geo) > 0 {
+			_ = json.Unmarshal(geo, &h.Geo)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// ListAllPorts 全量读取端口资产（过渡期供 ReindexFromPG）
+func (s *Store) ListAllPorts(ctx context.Context) ([]model.Port, error) {
+	rows, err := s.pool.Query(ctx, `SELECT ip, port, proto, service, version, banner, cert, title, webinfo, host, is_ipv6, state, first_seen, last_seen FROM ports`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.Port{}
+	for rows.Next() {
+		var p model.Port
+		var cert, webinfo []byte
+		if err := rows.Scan(&p.IP, &p.Port, &p.Proto, &p.Service, &p.Version, &p.Banner,
+			&cert, &p.Title, &webinfo, &p.Host, &p.IsIPv6, &p.State, &p.FirstSeen, &p.LastSeen); err != nil {
+			return nil, err
+		}
+		if len(cert) > 0 {
+			_ = json.Unmarshal(cert, &p.Cert)
+		}
+		if len(webinfo) > 0 {
+			_ = json.Unmarshal(webinfo, &p.WebInfo)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListAllDomains 全量读取域名资产（过渡期供 ReindexFromPG）
+func (s *Store) ListAllDomains(ctx context.Context) ([]model.Domain, error) {
+	rows, err := s.pool.Query(ctx, `SELECT name, registrable_domain, resolved_ips, cname, org, asn, is_ipv6, whois, first_seen, last_seen FROM domains`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.Domain{}
+	for rows.Next() {
+		var d model.Domain
+		var asn int64
+		var whois []byte
+		if err := rows.Scan(&d.Name, &d.RegistrableDomain, &d.ResolvedIPs, &d.CNAME,
+			&d.Org, &asn, &d.IsIPv6, &whois, &d.FirstSeen, &d.LastSeen); err != nil {
+			return nil, err
+		}
+		d.ASN = int(asn)
+		if len(whois) > 0 {
+			_ = json.Unmarshal(whois, &d.Whois)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
