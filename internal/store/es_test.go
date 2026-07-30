@@ -39,12 +39,10 @@ func TestESUpdateAsset_PayloadAndDocImmutability(t *testing.T) {
 	es := NewES(srv.URL, "assets")
 	inputDoc := map[string]any{
 		"ip":         "127.0.0.1",
-		"doc_type":   "host",
 		"first_seen": "2026-07-29T18:00:00Z",
 	}
 	snapshotDoc := map[string]any{
 		"ip":         "127.0.0.1",
-		"doc_type":   "host",
 		"first_seen": "2026-07-29T18:00:00Z",
 	}
 
@@ -97,7 +95,7 @@ func TestESUpdateAsset_PayloadAndDocImmutability(t *testing.T) {
 	if _, hasFS := paramsDoc["first_seen"]; hasFS {
 		t.Errorf("params.doc must NOT contain 'first_seen' field")
 	}
-	if paramsDoc["ip"] != "127.0.0.1" || paramsDoc["doc_type"] != "host" {
+	if paramsDoc["ip"] != "127.0.0.1" {
 		t.Errorf("params.doc missing expected fields, got %v", paramsDoc)
 	}
 }
@@ -115,14 +113,12 @@ func TestESUpdateAsset_WithoutFirstSeen(t *testing.T) {
 
 	es := NewES(srv.URL, "assets")
 	inputDoc := map[string]any{
-		"ip":       "127.0.0.1",
-		"doc_type": "host",
-		"os":       "Linux",
+		"ip": "127.0.0.1",
+		"os": "Linux",
 	}
 	snapshotDoc := map[string]any{
-		"ip":       "127.0.0.1",
-		"doc_type": "host",
-		"os":       "Linux",
+		"ip": "127.0.0.1",
+		"os": "Linux",
 	}
 
 	err := es.UpdateAsset(context.Background(), "host:127.0.0.1", inputDoc)

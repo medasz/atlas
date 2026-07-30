@@ -5,19 +5,10 @@ import (
 	"time"
 )
 
-// AssetKind 资产类型判别
-type AssetKind string
-
-const (
-	KindHost   AssetKind = "host"
-	KindPort   AssetKind = "port"
-	KindDomain AssetKind = "domain"
-)
-
-// Asset 资产本体统一结构；doc_type 区分 host/port/domain。
+// Asset 资产本体统一结构。
 // 端口必须仍是独立文档（满足 port 维度列表与 port=22 检索），不并入 host。
+// 不同类型（host/port/domain）以 _id 前缀区分，不再依赖分类字段。
 type Asset struct {
-	Kind   AssetKind       `json:"doc_type"`
 	IP     string          `json:"ip,omitempty"`
 	Port   int             `json:"port,omitempty"`
 	Proto  string          `json:"proto,omitempty"`
@@ -46,14 +37,14 @@ type Asset struct {
 	LastSeen  time.Time    `json:"last_seen,omitempty"`
 }
 
-// AssetID 返回 ES _id：host:<ip> / port:<ip>:<port> / domain:<name>
+// AssetID 返回 ES _id：host:<ip> / port:<ip>:<port> / domain:<name>。
+// 依据字段特征推导文档类别（不再使用分类字段）。
 func AssetID(a Asset) string {
-	switch a.Kind {
-	case KindPort:
+	if a.Port != 0 {
 		return "port:" + a.IP + ":" + strconv.Itoa(a.Port)
-	case KindDomain:
-		return "domain:" + a.Domain
-	default:
-		return "host:" + a.IP
 	}
+	if a.Domain != "" {
+		return "domain:" + a.Domain
+	}
+	return "host:" + a.IP
 }

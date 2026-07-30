@@ -58,7 +58,7 @@
       <el-table :data="items" v-loading="loading" stripe class="assets-table">
         <el-table-column label="目标" width="180">
           <template #default="{ row }">
-            <span class="cell-target">{{ (row.doc_type === 'domain' || (!row.ip && row.domain)) ? (row.domain || row.name || row.registrable_domain || '-') : (row.ip || '-') }}</span>
+            <span class="cell-target">{{ (!row.ip && (row.domain || row.name || row.registrable_domain)) ? (row.domain || row.name || row.registrable_domain || '-') : (row.ip || '-') }}</span>
           </template>
         </el-table-column>
         <el-table-column label="域名" min-width="170" show-overflow-tooltip>
@@ -193,7 +193,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 
-const hasDomain = computed(() => items.value.some(r => r.doc_type === 'domain'))
+const hasDomain = computed(() => items.value.some(r => !r.ip && (r.domain || r.name || r.registrable_domain)))
 
 const hostItems = computed(() => {
   if (!detail.value || !detail.value.host) return []

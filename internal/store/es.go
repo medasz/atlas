@@ -27,7 +27,6 @@ func NewES(addr, index string) *ESClient {
 const assetMapping = `{
   "mappings": {
     "properties": {
-      "doc_type": { "type": "keyword" },
       "ip":       { "type": "ip" },
       "port":     { "type": "integer" },
       "proto":    { "type": "keyword" },

@@ -18,5 +18,5 @@ type AssetStore interface {
 	ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error)
 	ListDomains(ctx context.Context) ([]model.Asset, error)
 	GetHostDetail(ctx context.Context, ip string) (model.Asset, []model.Asset, error)
-	SearchAssets(ctx context.Context, q, kind string, aggregated bool, page, pageSize int) (*store.SearchResult, error)
+	SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error)
 }

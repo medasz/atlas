@@ -26,7 +26,7 @@ func TestUpsertPortID(t *testing.T) {
 
 	es := store.NewES(srv.URL, "assets")
 	s := New(es)
-	err := s.Upsert(context.Background(), model.Asset{Kind: model.KindPort, IP: "1.2.3.4", Port: 22, Proto: "tcp"})
+	err := s.Upsert(context.Background(), model.Asset{IP: "1.2.3.4", Port: 22, Proto: "tcp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestUpsertPortID(t *testing.T) {
 func TestGetHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "_doc/host:1.2.3.4") {
-			w.Write([]byte(`{"found":true,"_source":{"doc_type":"host","ip":"1.2.3.4","org":"acme","os":"Linux"}}`))
+			w.Write([]byte(`{"found":true,"_source":{"ip":"1.2.3.4","org":"acme","os":"Linux"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -62,12 +62,12 @@ func TestGetHost(t *testing.T) {
 // TestSearchAssets 验证 SearchAssets 透传 ES 结果并正确分页
 func TestSearchAssets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"doc_type":"port","ip":"1.2.3.4","port":22}}]}}`))
+		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"ip":"1.2.3.4","port":22}}]}}`))
 	}))
 	defer srv.Close()
 
 	s := New(store.NewES(srv.URL, "assets"))
-	res, err := s.SearchAssets(context.Background(), "port=22", "", false, 1, 20)
+	res, err := s.SearchAssets(context.Background(), "port=22", false, 1, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,8 +106,8 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 									"top_docs": {
 										"hits": {
 											"hits": [
-												{"_source": {"doc_type": "host", "ip": "1.1.1.1", "org": "Cloudflare", "os": "Linux"}},
-												{"_source": {"doc_type": "port", "ip": "1.1.1.1", "port": 443, "service": "https", "title": "Secure Site", "host": "example.com"}}
+												{"_source": {"ip": "1.1.1.1", "org": "Cloudflare", "os": "Linux"}},
+												{"_source": {"ip": "1.1.1.1", "port": 443, "service": "https", "title": "Secure Site", "host": "example.com"}}
 											]
 										}
 									}
@@ -130,7 +130,7 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 								"top_docs": {
 									"hits": {
 										"hits": [
-											{"_source": {"doc_type": "port", "ip": "2.2.2.2", "port": 22, "service": "ssh"}}
+											{"_source": {"ip": "2.2.2.2", "port": 22, "service": "ssh"}}
 										]
 									}
 								}
@@ -154,7 +154,7 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 								"top_docs": {
 									"hits": {
 										"hits": [
-											{"_source": {"doc_type": "domain", "name": "nameonly.org", "registrable_domain": "nameonly.org"}}
+											{"_source": {"name": "nameonly.org", "registrable_domain": "nameonly.org"}}
 										]
 									}
 								}
@@ -172,7 +172,7 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 
 	// 测试 1: 发起聚合请求并断言 top_hits size <= 100 限制
 	requestBodies = nil
-	res, err := s.SearchAssets(context.Background(), "", "", true, 1, 10)
+	res, err := s.SearchAssets(context.Background(), "", true, 1, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,22 +223,21 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 		t.Errorf("expected name-only domain 'nameonly.org' to be parsed and included")
 	}
 
-	// 测试 4: 验证 kind 过滤跳过循环
-	requestBodies = nil
-	_, _ = s.SearchAssets(context.Background(), "", "host", true, 1, 10)
-	for _, reqBody := range requestBodies {
-		aggs, _ := reqBody["aggs"].(map[string]any)
-		if _, hasDomComp := aggs["domain_composite"]; hasDomComp {
-			t.Errorf("kind=host must skip domain_composite aggregation")
+	// 测试 4: 验证聚合结果去除 doc_type 分类标识，且保留操作系统字段（os）
+	var hostItem map[string]any
+	for _, it := range res.Items {
+		if it["ip"] == "1.1.1.1" {
+			hostItem = it
+			break
 		}
 	}
-
-	requestBodies = nil
-	_, _ = s.SearchAssets(context.Background(), "", "domain", true, 1, 10)
-	for _, reqBody := range requestBodies {
-		aggs, _ := reqBody["aggs"].(map[string]any)
-		if _, hasIPComp := aggs["ip_composite"]; hasIPComp {
-			t.Errorf("kind=domain must skip ip_composite aggregation")
-		}
+	if hostItem == nil {
+		t.Fatalf("expected aggregated item for 1.1.1.1")
+	}
+	if _, ok := hostItem["doc_type"]; ok {
+		t.Errorf("aggregated item must not contain doc_type, got %v", hostItem["doc_type"])
+	}
+	if os, ok := hostItem["os"].(string); !ok || os != "Linux" {
+		t.Errorf("expected merged os=Linux, got %v", hostItem["os"])
 	}
 }

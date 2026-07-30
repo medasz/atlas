@@ -28,7 +28,7 @@ func (s *ESAssetStore) Upsert(ctx context.Context, a model.Asset) error {
 
 // assetToDoc 将统一 Asset 转为 ES 文档；跳过零值以减小体积
 func assetToDoc(a model.Asset) map[string]any {
-	m := map[string]any{"doc_type": string(a.Kind)}
+	m := map[string]any{}
 	if a.IP != "" {
 		m["ip"] = a.IP
 	}
@@ -126,7 +126,7 @@ func (s *ESAssetStore) GetHost(ctx context.Context, ip string) (model.Asset, err
 func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error) {
 	q := map[string]any{
 		"query": map[string]any{"bool": map[string]any{"must": []any{
-			map[string]any{"term": map[string]any{"doc_type": "port"}},
+			map[string]any{"exists": map[string]any{"field": "port"}},
 			map[string]any{"term": map[string]any{"ip": ip}},
 		}}},
 		"sort": []any{map[string]any{"port": map[string]any{"order": "asc"}}},
@@ -146,7 +146,9 @@ func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.As
 // ListDomains 列出全部域名（按 last_seen 倒序）
 func (s *ESAssetStore) ListDomains(ctx context.Context) ([]model.Asset, error) {
 	q := map[string]any{
-		"query": map[string]any{"term": map[string]any{"doc_type": "domain"}},
+		"query": map[string]any{"bool": map[string]any{"must": []any{
+			map[string]any{"exists": map[string]any{"field": "domain"}},
+		}}},
 		"sort":  []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
 		"size":  10000,
 	}
@@ -177,9 +179,6 @@ func (s *ESAssetStore) GetHostDetail(ctx context.Context, ip string) (model.Asse
 // assetFromSource 从 ES _source 还原统一 Asset
 func assetFromSource(m map[string]any) model.Asset {
 	a := model.Asset{}
-	if v, ok := m["doc_type"].(string); ok {
-		a.Kind = model.AssetKind(v)
-	}
 	if v, ok := m["ip"].(string); ok {
 		a.IP = v
 	}
@@ -274,7 +273,7 @@ func assetFromSource(m map[string]any) model.Asset {
 }
 
 // SearchAssets 资产检索（仅 ES），支持标准分页及 Composite Aggregation (after_key 循环全量遍历) 聚合模式
-func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggregated bool, page, pageSize int) (*store.SearchResult, error) {
+func (s *ESAssetStore) SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error) {
 	root := store.ParseQuery(q)
 	tp := pageSize
 	if tp <= 0 {
@@ -289,7 +288,7 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 		if from < 0 {
 			from = 0
 		}
-		query := store.BuildESQuery(root, kind, from, tp)
+		query := store.BuildESQuery(root, from, tp)
 		items, total, err := s.es.Search(ctx, query)
 		if err != nil {
 			return nil, err
@@ -304,14 +303,14 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 	// ---- ES Composite Aggregation (after_key 循环遍历) 模式 ----
 	aggregatedItems := make([]map[string]any, 0)
 
-	skipIPAgg := (kind == "domain")
-	skipDomainAgg := (kind == "host" || kind == "port")
+	skipIPAgg := false
+	skipDomainAgg := false
 
 	// 1. 循环遍历 IP 桶
 	if !skipIPAgg {
 		var ipAfterKey map[string]any
 		for {
-			compQuery := store.BuildESCompositeQuery(root, kind, false, ipAfterKey, 1000)
+			compQuery := store.BuildESCompositeQuery(root, false, ipAfterKey, 1000)
 			rawResp, err := s.es.SearchAgg(ctx, compQuery)
 			if err != nil {
 				return nil, err
@@ -446,9 +445,28 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 					firstDom = domains[0]
 				}
 
+				// 单独获取主机文档，确保主机级字段（os/org/asn/geo/whois 等）
+				// 不被 top_docs 截断遗漏，并补全聚合时仅挑选的部分字段。
+				hostSrc := map[string]any{}
+				if hs, gerr := s.es.Get(ctx, "host:"+ipStr); gerr == nil {
+					hostSrc = hs
+				}
+				if v, ok := hostSrc["org"].(string); ok && v != "" {
+					org = v
+				}
+				if v, ok := hostSrc["asn"].(float64); ok && v > 0 {
+					asn = int(v)
+				}
+				if v, ok := hostSrc["os"].(string); ok && v != "" {
+					os = v
+				}
+				if v, ok := hostSrc["is_ipv6"].(bool); ok && v {
+					isIPv6 = true
+				}
+
+				// 合并结果不含 doc_type 分类标识；补全主机级字段，避免遗漏。
 				item := map[string]any{
 					"ip":                ipStr,
-					"doc_type":          "host",
 					"aggregated":        true,
 					"open_ports":        ports,
 					"services":          services,
@@ -462,6 +480,43 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 					"truncated":         isTruncated,
 					"document_count":    int(docCount),
 					"aggregation_limit": store.MaxTopHitsSize,
+				}
+				// 补全其余主机级单值字段
+				for _, f := range []string{"proto", "state", "version", "banner", "server"} {
+					if v, ok := hostSrc[f].(string); ok && v != "" {
+						item[f] = v
+					}
+				}
+				// 补全对象型字段
+				for _, f := range []string{"cert", "webinfo", "geo", "whois"} {
+					if v, ok := hostSrc[f].(map[string]any); ok && len(v) > 0 {
+						item[f] = v
+					}
+				}
+				// 合并数组型字段（tech/resolved_ips/cname）取主机与各端口文档并集
+				techSet := map[string]bool{}
+				resolvedSet := map[string]bool{}
+				cnameSet := map[string]bool{}
+				collectStrArr(hostSrc, "tech", techSet)
+				collectStrArr(hostSrc, "resolved_ips", resolvedSet)
+				collectStrArr(hostSrc, "cname", cnameSet)
+				for _, hitItem := range hitsList {
+					if h, ok := hitItem.(map[string]any); ok {
+						if src, ok := h["_source"].(map[string]any); ok {
+							collectStrArr(src, "tech", techSet)
+							collectStrArr(src, "resolved_ips", resolvedSet)
+							collectStrArr(src, "cname", cnameSet)
+						}
+					}
+				}
+				if len(techSet) > 0 {
+					item["tech"] = sortedKeys(techSet)
+				}
+				if len(resolvedSet) > 0 {
+					item["resolved_ips"] = sortedKeys(resolvedSet)
+				}
+				if len(cnameSet) > 0 {
+					item["cname"] = sortedKeys(cnameSet)
 				}
 				if !firstSeen.IsZero() {
 					item["first_seen"] = firstSeen.Format(time.RFC3339)
@@ -484,7 +539,7 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 	if !skipDomainAgg {
 		var domAfterKey map[string]any
 		for {
-			compQuery := store.BuildESCompositeQuery(root, kind, true, domAfterKey, 1000)
+			compQuery := store.BuildESCompositeQuery(root, true, domAfterKey, 1000)
 			rawResp, err := s.es.SearchAgg(ctx, compQuery)
 			if err != nil {
 				return nil, err
@@ -532,15 +587,16 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 					dName = dDomain
 				}
 
-				item := map[string]any{
-					"domain":             dDomain,
-					"name":               dName,
-					"registrable_domain": dReg,
-					"doc_type":           "domain",
-					"aggregated":         true,
-					"resolved_ips":       src["resolved_ips"],
-					"truncated":          false,
+				// 保留域名文档全部源字段，并规范化 domain/name。
+				item := map[string]any{}
+				for k, v := range src {
+					item[k] = v
 				}
+				item["domain"] = dDomain
+				item["name"] = dName
+				item["registrable_domain"] = dReg
+				item["aggregated"] = true
+				item["truncated"] = false
 				aggregatedItems = append(aggregatedItems, item)
 			}
 
@@ -578,4 +634,25 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggrega
 		Aggregated: true,
 		Items:      pageItems,
 	}, nil
+}
+
+// collectStrArr 将源文档中的字符串数组字段并入集合（去重）。
+func collectStrArr(src map[string]any, field string, dst map[string]bool) {
+	if v, ok := src[field].([]any); ok {
+		for _, x := range v {
+			if s, ok := x.(string); ok && s != "" {
+				dst[s] = true
+			}
+		}
+	}
+}
+
+// sortedKeys 返回集合键的有序切片。
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -431,11 +431,8 @@ type SearchResult struct {
 }
 
 // BuildESQuery 生成 ES 查询并注入分页（from/size）。供 esasset 检索使用。
-func BuildESQuery(root node, docType string, from, size int) map[string]any {
+func BuildESQuery(root node, from, size int) map[string]any {
 	must := []any{}
-	if docType != "" {
-		must = append(must, map[string]any{"term": map[string]any{"doc_type": docType}})
-	}
 	if root != nil {
 		must = append(must, root.toES())
 	}
@@ -454,11 +451,8 @@ func BuildESQuery(root node, docType string, from, size int) map[string]any {
 const MaxTopHitsSize = 100
 
 // BuildESCompositeQuery 生成符合 ES 8.13 限制 (top_hits.size <= 100) 的 Composite Aggregation DSL
-func BuildESCompositeQuery(root node, docType string, isDomain bool, afterKey map[string]any, batchSize int) map[string]any {
+func BuildESCompositeQuery(root node, isDomain bool, afterKey map[string]any, batchSize int) map[string]any {
 	must := []any{}
-	if docType != "" {
-		must = append(must, map[string]any{"term": map[string]any{"doc_type": docType}})
-	}
 	if root != nil {
 		must = append(must, root.toES())
 	}
@@ -505,10 +499,9 @@ func BuildESCompositeQuery(root node, docType string, isDomain bool, afterKey ma
 		}
 	}
 
-	domainMust := append(must, map[string]any{"term": map[string]any{"doc_type": "domain"}})
 	queryBody := map[string]any{
 		"bool": map[string]any{
-			"must": domainMust,
+			"must": must,
 			"must_not": []any{
 				map[string]any{"exists": map[string]any{"field": "ip"}},
 			},

@@ -199,18 +199,17 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 			banner := grabBanner(conn, sc.timeout)
 			_ = conn.Close()
 
-			portAsset := model.Asset{
-				Kind:    model.KindPort,
-				IP:      ip,
-				Port:    p,
-				Proto:   "tcp",
-				State:   string(tcpscan.Open),
-				Service: guessService(p, banner),
-				Banner:  banner,
-				Host:    ip,
-				IsIPv6:  isV6,
-				LastSeen: time.Now(),
-			}
+		portAsset := model.Asset{
+			IP:      ip,
+			Port:    p,
+			Proto:   "tcp",
+			State:   string(tcpscan.Open),
+			Service: guessService(p, banner),
+			Banner:  banner,
+			Host:    ip,
+			IsIPv6:  isV6,
+			LastSeen: time.Now(),
+		}
 			sc.httpEnrich(ip, p, banner, &portAsset)
 			sc.upsert(ctx, portAsset)
 
@@ -226,7 +225,6 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 // finishHost 落库主机资产并返回扫描结果摘要。
 func (sc *Scanner) finishHost(ctx context.Context, ip string, isV6 bool, openPorts []int) (map[string]any, error) {
 	if err := sc.asset.Upsert(ctx, model.Asset{
-		Kind:      model.KindHost,
 		IP:        ip,
 		IsIPv6:    isV6,
 		OpenPorts: len(openPorts),
@@ -261,7 +259,6 @@ func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpsca
 		return
 	}
 	portAsset := model.Asset{
-		Kind:    model.KindPort,
 		IP:      ip,
 		Port:    p,
 		Proto:   "tcp",
@@ -308,7 +305,7 @@ func (sc *Scanner) httpEnrich(ip string, p int, banner string, portModel *model.
 // upsert 写入资产；单条失败仅记日志不中断扫描（与 panic 安全网一致，避免单端口写入异常拖垮整个目标）。
 func (sc *Scanner) upsert(ctx context.Context, a model.Asset) {
 	if err := sc.asset.Upsert(ctx, a); err != nil {
-		log.Printf("scan: upsert %s %s failed: %v", a.Kind, model.AssetID(a), err)
+		log.Printf("scan: upsert %s failed: %v", model.AssetID(a), err)
 	}
 }
 
@@ -345,7 +342,6 @@ func (sc *Scanner) scanDomain(ctx context.Context, domain string, ports []int) (
 			webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, "")
 		}
 		portAsset := model.Asset{
-			Kind:    model.KindPort,
 			IP:      domain,
 			Port:    p,
 			Proto:   "tcp",
@@ -363,7 +359,6 @@ func (sc *Scanner) scanDomain(ctx context.Context, domain string, ports []int) (
 		open = append(open, webinfo)
 	}
 	if err := sc.asset.Upsert(ctx, model.Asset{
-		Kind:              model.KindDomain,
 		Domain:            domain,
 		Host:              domain,
 		RegistrableDomain: registrableDomain(domain),
