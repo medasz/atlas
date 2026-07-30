@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将资产本体（hosts/ports/domains）的存储从 PostgreSQL 双写改为 Elasticsearch 唯一存储，抽取 `AssetStore` 接口并由 `esasset` 包以 ES 后端实现，移除 PG 资产表与 `es_pending` 机制，并加 ES 快照备份/自动恢复。资产本体统一为**单个 `model.Asset` 结构**（以 `doc_type` 字段区分 host/port/domain），不再保留三套独立类型作为存储契约。
+**Goal:** 将资产本体（hosts/ports/domains）的存储从 PostgreSQL 双写改为 Elasticsearch 唯一存储，抽取 `AssetStore` 接口并由 `esasset` 包以 ES 后端实现，移除 PG 资产表与 `es_pending` 机制，并加 ES 快照备份/自动恢复。资产本体统一为**单个 `model.Asset` 结构**，资产类型以 `_id` 前缀（`host:`/`port:`/`domain:`）与字段存在性（`exists port` / `exists domain` / `exists ip`）区分，**不再使用 `doc_type` 分类字段**，不再保留三套独立类型作为存储契约。
 
 **Architecture:** `assetstore.AssetStore` 接口（基于统一的 `model.Asset`）的读写与检索，唯一实现 `esasset.ESAssetStore` 基于 `store.ESClient`。PG `Store` 仅保留 vulns/tasks/blacklist/config；`getHostDetail` 由 HTTP 层组合「ES 资产 + PG 漏洞」。检索只走 ES，删除 PG union 回退。迁移期用 `ReindexFromPG` 把 PG 资产灌入 ES 后再删 PG 资产表。
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **ES 唯一存储**：部署后 `hosts`/`ports`/`domains` 表被删除，资产读写只经 `AssetStore`→ES。
-- **统一 Asset 结构**：资产本体统一为 `model.Asset`（`doc_type` ∈ {host,port,domain}）。`AssetStore` 接口只认 `model.Asset`：`Upsert(ctx, model.Asset)`；读接口返回 `model.Asset` 或 `[]model.Asset`。`scan` worker 与 `reindex` 都构造 `model.Asset` 后调用 `Upsert`。**端口必须仍是独立文档/独立行**（满足 port 维度列表与 `port=22` 检索），不可把端口塞进 host 文档。
+- **统一 Asset 结构**：资产本体统一为 `model.Asset`，**无 `doc_type`/`Kind` 分类字段**；`AssetStore` 接口只认 `model.Asset`：`Upsert(ctx, model.Asset)`；读接口返回 `model.Asset` 或 `[]model.Asset`。`scan` worker 与 `reindex` 都构造 `model.Asset` 后调用 `Upsert`。**端口必须仍是独立文档/独立行**（满足 port 维度列表与 `port=22` 检索），不可把端口塞进 host 文档。资产类型以 `_id` 前缀（`host:`/`port:`/`domain:`）与字段存在性（`exists port`/`exists domain`/`exists ip`）判别。
 - **仅资产本体迁 ES**：vulns / tasks / blacklist / config 仍留 PG（`vulns.asset_ref` 为字符串关联，无 FK）。
 - **备份恢复**：ES 快照挂持久卷 + 启动自动恢复 + 周期打快照（默认 6h）。
 - **删除项**：`es_pending` 列及 `FlushPendingES`/`indexAsset`/30s ticker/`searchAssetsPG`/`scopeUnionSelect`/`assetCols`/PG 资产 Upsert 法/`model.Host`/`model.Port`/`model.Domain`（确认无其他引用后移除）。
@@ -23,7 +23,7 @@
 
 ## 统一 Asset 模型（新增）
 
-`model.Asset` 的字段涵盖 host/port/domain 的全部属性，零值字段在写入 ES 时省略（`omitempty` 或构建 doc 时跳过零值）。判别字段 `doc_type`。
+`model.Asset` 的字段涵盖 host/port/domain 的全部属性，零值字段在写入 ES 时省略（`omitempty` 或构建 doc 时跳过零值）。资产类型以 `_id` 前缀（`host:`/`port:`/`domain:`）与字段存在性（`exists port` / `exists domain` / `exists ip`）判别，**不依赖任何分类字段**。
 
 ```go
 // internal/model/asset.go
@@ -31,21 +31,13 @@ package model
 
 import "time"
 
-type AssetKind string
-
-const (
-    KindHost   AssetKind = "host"
-    KindPort   AssetKind = "port"
-    KindDomain AssetKind = "domain"
-)
-
-// Asset 资产本体统一结构；doc_type 区分 host/port/domain
+// Asset 资产本体统一结构；资产类型以 _id 前缀（host:/port:/domain:）与字段存在性区分，
+// 不再使用 doc_type / Kind 分类字段。
 type Asset struct {
-    Kind   AssetKind       `json:"doc_type"`
     IP     string          `json:"ip,omitempty"`
     Port   int             `json:"port,omitempty"`
     Proto  string          `json:"proto,omitempty"`
-    Domain string          `json:"domain,omitempty"` // domain kind 的完整主机名（=原 Domain.Name）
+    Domain string          `json:"domain,omitempty"` // domain 类型的完整主机名（=原 Domain.Name）
     Host   string          `json:"host,omitempty"`   // 到达端口所用主机名/域名（HTTP Host）
     ASN    int             `json:"asn,omitempty"`
     Org    string          `json:"org,omitempty"`
@@ -70,16 +62,16 @@ type Asset struct {
     LastSeen  time.Time    `json:"last_seen,omitempty"`
 }
 
-// AssetID 返回 ES _id：host:<ip> / port:<ip>:<port> / domain:<name>
+// AssetID 返回 ES _id：port:<ip>:<port> / domain:<name> / host:<ip>
+// 按字段存在性推导：Port>0 → 端口文档；Domain 非空 → 域名文档；否则 → 主机文档。
 func AssetID(a Asset) string {
-    switch a.Kind {
-    case KindPort:
+    if a.Port != 0 {
         return "port:" + a.IP + ":" + strconv.Itoa(a.Port)
-    case KindDomain:
-        return "domain:" + a.Domain
-    default:
-        return "host:" + a.IP
     }
+    if a.Domain != "" {
+        return "domain:" + a.Domain
+    }
+    return "host:" + a.IP
 }
 ```
 
@@ -92,7 +84,7 @@ type AssetStore interface {
     ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error)
     ListDomains(ctx context.Context) ([]model.Asset, error)
     GetHostDetail(ctx context.Context, ip string) (model.Asset, []model.Asset, error)
-    SearchAssets(ctx context.Context, q, kind string, page, pageSize int) (*store.SearchResult, error)
+    SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error)
 }
 ```
 
@@ -101,7 +93,7 @@ type AssetStore interface {
 ## File Structure
 
 **新增**
-- `internal/model/asset.go` — `model.Asset`、`AssetKind`、`AssetID`。
+- `internal/model/asset.go` — `model.Asset`、`AssetID`。
 - `internal/assetstore/assetstore.go` — `AssetStore` 接口 + `ErrNotFound`。
 - `internal/esasset/esasset.go` — `ESAssetStore` 实现（doc 构建、读写、检索），只认 `model.Asset`。
 - `internal/assetstore/reindex.go` — `ReindexFromPG`（过渡期：PG 读 Host/Port/Domain → 转 `model.Asset` → `Upsert`）。
@@ -131,7 +123,7 @@ type AssetStore interface {
 - Create: `internal/assetstore/assetstore.go`
 
 **Interfaces:**
-- Produces: `model.Asset`/`AssetKind`/`AssetID`（统一资产类型）、`assetstore.AssetStore` 接口、`assetstore.ErrNotFound`。后续所有资产读写依赖此接口与 `model.Asset`。
+- Produces: `model.Asset`/`AssetID`（统一资产类型）、`assetstore.AssetStore` 接口、`assetstore.ErrNotFound`。后续所有资产读写依赖此接口与 `model.Asset`。
 
 - [ ] **Step 1: 写 model/asset.go**
 
@@ -160,7 +152,7 @@ type AssetStore interface {
 	ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error)
 	ListDomains(ctx context.Context) ([]model.Asset, error)
 	GetHostDetail(ctx context.Context, ip string) (model.Asset, []model.Asset, error)
-	SearchAssets(ctx context.Context, q, kind string, page, pageSize int) (*store.SearchResult, error)
+	SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error)
 }
 ```
 
@@ -425,7 +417,7 @@ func (f *fakeES) Delete(ctx context.Context, id string) error { return nil }
 func TestUpsertPortID(t *testing.T) {
 	f := &fakeES{}
 	s := New(f)
-	err := s.Upsert(context.Background(), model.Asset{Kind: model.KindPort, IP: "1.2.3.4", Port: 22, Proto: "tcp"})
+	err := s.Upsert(context.Background(), model.Asset{IP: "1.2.3.4", Port: 22, Proto: "tcp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +457,7 @@ func (s *ESAssetStore) Upsert(ctx context.Context, a model.Asset) error {
 
 // assetToDoc 将统一 Asset 转为 ES 文档；跳过零值以减小体积
 func assetToDoc(a model.Asset) map[string]any {
-	m := map[string]any{"doc_type": string(a.Kind)}
+	m := map[string]any{}
 	if a.IP != "" {
 		m["ip"] = a.IP
 	}
@@ -585,7 +577,7 @@ func TestGetHost(t *testing.T) {
 			}
 			return false
 		}(); contains {
-			w.Write([]byte(`{"found":true,"_source":{"doc_type":"host","ip":"1.2.3.4","org":"acme","os":"Linux"}}`))
+			w.Write([]byte(`{"found":true,"_source":{"ip":"1.2.3.4","org":"acme","os":"Linux"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -629,7 +621,7 @@ func (s *ESAssetStore) GetHost(ctx context.Context, ip string) (model.Asset, err
 func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.Asset, error) {
 	q := map[string]any{
 		"query": map[string]any{"bool": map[string]any{"must": []any{
-			map[string]any{"term": map[string]any{"doc_type": "port"}},
+			map[string]any{"exists": map[string]any{"field": "port"}},
 			map[string]any{"term": map[string]any{"ip": ip}},
 		}}},
 		"sort":  []any{map[string]any{"port": map[string]any{"order": "asc"}}},
@@ -649,7 +641,7 @@ func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.As
 // ListDomains 列出全部域名（按 last_seen 倒序）
 func (s *ESAssetStore) ListDomains(ctx context.Context) ([]model.Asset, error) {
 	q := map[string]any{
-		"query": map[string]any{"term": map[string]any{"doc_type": "domain"}},
+		"query": map[string]any{"bool": map[string]any{"must": []any{map[string]any{"exists": map[string]any{"field": "domain"}}}}},
 		"sort":  []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
 		"size":  10000,
 	}
@@ -680,9 +672,7 @@ func (s *ESAssetStore) GetHostDetail(ctx context.Context, ip string) (model.Asse
 // assetFromSource 从 ES _source 还原统一 Asset
 func assetFromSource(m map[string]any) model.Asset {
 	a := model.Asset{}
-	if v, ok := m["doc_type"].(string); ok {
-		a.Kind = model.AssetKind(v)
-	}
+
 	if v, ok := m["ip"].(string); ok {
 		a.IP = v
 	}
@@ -808,11 +798,11 @@ git commit -m "feat(esasset): 实现资产读取与 GetHostDetail（统一 Asset
 ```go
 func TestSearchAssets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"doc_type":"port","ip":"1.2.3.4","port":22}}]}}`))
+		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"ip":"1.2.3.4","port":22}}]}}`))
 	}))
 	defer srv.Close()
 	s := New(store.NewES(srv.URL, "assets"))
-	res, err := s.SearchAssets(context.Background(), "port=22", "", 1, 20)
+	res, err := s.SearchAssets(context.Background(), "port=22", false, 1, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,13 +825,13 @@ Expected: FAIL（`SearchAssets` 未实现）。
 
 ```go
 // SearchAssets 资产检索（仅 ES），标准分页
-func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, page, pageSize int) (*store.SearchResult, error) {
+func (s *ESAssetStore) SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error) {
 	root := store.ParseQuery(q)
 	from := (page - 1) * pageSize
 	if from < 0 {
 		from = 0
 	}
-	query := buildESQuery(root, kind, from, pageSize)
+	query := buildESQuery(root, from, pageSize)
 	items, total, err := s.es.Search(ctx, query)
 	if err != nil {
 		return nil, err
@@ -857,11 +847,8 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, page, p
 	return &store.SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Items: items}, nil
 }
 
-func buildESQuery(root node, kind string, from, size int) map[string]any {
+func buildESQuery(root node, from, size int) map[string]any {
 	must := []any{}
-	if kind != "" {
-		must = append(must, map[string]any{"term": map[string]any{"doc_type": kind}})
-	}
 	if root != nil {
 		must = append(must, root.toES())
 	}
@@ -950,9 +937,9 @@ git commit -m "refactor(store): 移除 PG 资产写入与 es_pending 机制"
 
 将 `sc.store.UpsertPort(...)` / `sc.store.UpsertHost(...)` / `sc.store.UpsertDomain(...)` 替换为构造 `model.Asset`：
 
-- 原 `UpsertHost(h)` → `sc.asset.Upsert(ctx, model.Asset{Kind: model.KindHost, IP: h.IP, ASN: h.ASN, Org: h.Org, OS: h.OS, IsIPv6: h.IsIPv6, OpenPorts: len(h.OpenPorts), FirstSeen: h.FirstSeen, LastSeen: h.LastSeen})`（字段按原 `Host` 结构取用；如原代码用 `model.Host{}` 构造，直接整体映射为 `model.Asset`）。
-- 原 `UpsertPort(p)` → `sc.asset.Upsert(ctx, model.Asset{Kind: model.KindPort, IP: p.IP, Port: p.Port, Proto: p.Proto, State: p.State, Service: p.Service, Version: p.Version, Banner: p.Banner, Title: p.Title, Host: p.Host, IsIPv6: p.IsIPv6, Cert: p.Cert, WebInfo: p.WebInfo, FirstSeen: p.FirstSeen, LastSeen: p.LastSeen})`。
-- 原 `UpsertDomain(d)` → `sc.asset.Upsert(ctx, model.Asset{Kind: model.KindDomain, Domain: d.Name, Host: d.Name, RegistrableDomain: d.RegistrableDomain, ResolvedIPs: d.ResolvedIPs, CNAME: d.CNAME, Org: d.Org, ASN: d.ASN, IsIPv6: d.IsIPv6, Whois: d.Whois, FirstSeen: d.FirstSeen, LastSeen: d.LastSeen})`。
+- 原 `UpsertHost(h)` → `sc.asset.Upsert(ctx, model.Asset{IP: h.IP, ASN: h.ASN, Org: h.Org, OS: h.OS, IsIPv6: h.IsIPv6, OpenPorts: len(h.OpenPorts), FirstSeen: h.FirstSeen, LastSeen: h.LastSeen})`（字段按原 `Host` 结构取用；如原代码用 `model.Host{}` 构造，直接整体映射为 `model.Asset`）。
+- 原 `UpsertPort(p)` → `sc.asset.Upsert(ctx, model.Asset{IP: p.IP, Port: p.Port, Proto: p.Proto, State: p.State, Service: p.Service, Version: p.Version, Banner: p.Banner, Title: p.Title, Host: p.Host, IsIPv6: p.IsIPv6, Cert: p.Cert, WebInfo: p.WebInfo, FirstSeen: p.FirstSeen, LastSeen: p.LastSeen})`。
+- 原 `UpsertDomain(d)` → `sc.asset.Upsert(ctx, model.Asset{Domain: d.Name, Host: d.Name, RegistrableDomain: d.RegistrableDomain, ResolvedIPs: d.ResolvedIPs, CNAME: d.CNAME, Org: d.Org, ASN: d.ASN, IsIPv6: d.IsIPv6, Whois: d.Whois, FirstSeen: d.FirstSeen, LastSeen: d.LastSeen})`。
 
 （具体字段以 `scan.go` 现有调用处的 `model.Host/Port/Domain` 取值为准，逐字段映射。）
 
@@ -1062,7 +1049,7 @@ func ReindexFromPG(ctx context.Context, pg *store.Store, a AssetStore) error {
 	}
 	for _, h := range hosts {
 		if err := a.Upsert(ctx, model.Asset{
-			Kind: model.KindHost, IP: h.IP, ASN: h.ASN, Org: h.Org, OS: h.OS,
+			IP: h.IP, ASN: h.ASN, Org: h.Org, OS: h.OS,
 			IsIPv6: h.IsIPv6, OpenPorts: len(h.OpenPorts), Geo: h.Geo,
 			FirstSeen: h.FirstSeen, LastSeen: h.LastSeen,
 		}); err != nil {
@@ -1075,7 +1062,7 @@ func ReindexFromPG(ctx context.Context, pg *store.Store, a AssetStore) error {
 	}
 	for _, p := range ports {
 		if err := a.Upsert(ctx, model.Asset{
-			Kind: model.KindPort, IP: p.IP, Port: p.Port, Proto: p.Proto, State: p.State,
+			IP: p.IP, Port: p.Port, Proto: p.Proto, State: p.State,
 			Service: p.Service, Version: p.Version, Banner: p.Banner, Title: p.Title,
 			Host: p.Host, IsIPv6: p.IsIPv6, Cert: p.Cert, WebInfo: p.WebInfo,
 			FirstSeen: p.FirstSeen, LastSeen: p.LastSeen,
@@ -1089,7 +1076,7 @@ func ReindexFromPG(ctx context.Context, pg *store.Store, a AssetStore) error {
 	}
 	for _, d := range domains {
 		if err := a.Upsert(ctx, model.Asset{
-			Kind: model.KindDomain, Domain: d.Name, Host: d.Name,
+			Domain: d.Name, Host: d.Name,
 			RegistrableDomain: d.RegistrableDomain, ResolvedIPs: d.ResolvedIPs,
 			CNAME: d.CNAME, Org: d.Org, ASN: d.ASN, IsIPv6: d.IsIPv6,
 			Whois: d.Whois, FirstSeen: d.FirstSeen, LastSeen: d.LastSeen,

@@ -37,7 +37,7 @@
 
 ## 3. 数据模型（ES，沿用现有）
 
-- 索引 `assets`，映射 `assetMapping` 不变（doc_type / ip / port / proto / service / version / banner / title / host / name / registrable_domain / server / tech / os / asn / org / geo / is_ipv6 / last_seen）。
+- 索引 `assets`，映射 `assetMapping`（ip / port / proto / service / version / banner / title / host / name / registrable_domain / server / tech / os / asn / org / geo / is_ipv6 / last_seen）。资产类型**不再用 `doc_type` 字段区分**，统一以 `_id` 前缀（`host:` / `port:` / `domain:`）与字段存在性（`exists port` / `exists domain` / `exists ip`）判别。
 - `_id` 规则沿用现状：`host:<ip>`、`port:<ip>:<port>`（proto 维度当前未进 `_id`，与现有 `UpsertPort` 行为一致，本期不改变）、`domain:<name>`。
 - ES 文档的构建逻辑（原 `pg.go` `UpsertHost/Port/Domain` 内的 doc 组装）**搬入 `esasset` 包**，由 ES 后端独占。
 
@@ -54,7 +54,7 @@ type AssetStore interface {
     ListPortsByIP(ctx context.Context, ip string) ([]model.Port, error)
     ListDomains(ctx context.Context) ([]model.Domain, error)
     GetHostDetail(ctx context.Context, ip string) (model.Host, []model.Port, error)
-    SearchAssets(ctx context.Context, q, docType string, page, pageSize int) (*store.SearchResult, error)
+    SearchAssets(ctx context.Context, q string, aggregated bool, page, pageSize int) (*store.SearchResult, error)
 }
 ```
 
@@ -71,8 +71,8 @@ type AssetStore interface {
 `ESClient` 新增方法：`Get(ctx, id) (map[string]any, error)`（404→`ErrNotFound`）、`Delete(ctx, id) error`。
 
 - `GetHost(ip)` → `es.Get("host:"+ip)` → 映射 `model.Host`；404→`ErrNotFound`（HTTP 层转 404）。
-- `ListPortsByIP(ip)` → ES 查 `doc_type:port AND ip:<ip>`，按 `port` 升序。
-- `ListDomains` → ES 查 `doc_type:domain`，**分页/滚动**拉取（避免一次性返回全量），默认按 `last_seen` 倒序。
+- `ListPortsByIP(ip)` → ES 查 `exists port AND term ip:<ip>`，按 `port` 升序。
+- `ListDomains` → ES 查 `exists domain`（且 `must_not exists ip`），**分页/滚动**拉取（避免一次性返回全量），默认按 `last_seen` 倒序。
 - `GetHostDetail(ip)` → `GetHost` + `ListPortsByIP`；漏洞由 HTTP 层另查 PG `ListVulnsByHost`。
 - `SearchAssets` → `buildESQuery` + `es.Search`，**删除 PG union 回退**（`searchAssetsPG` / `scopeUnionSelect` / `assetCols` / `renumber` 中仅资产使用的部分一并移除）。
 
