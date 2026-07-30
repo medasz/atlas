@@ -3,6 +3,9 @@ package esasset
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
+	"time"
 
 	"atlas/internal/assetstore"
 	"atlas/internal/model"
@@ -126,8 +129,8 @@ func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.As
 			map[string]any{"term": map[string]any{"doc_type": "port"}},
 			map[string]any{"term": map[string]any{"ip": ip}},
 		}}},
-		"sort":  []any{map[string]any{"port": map[string]any{"order": "asc"}}},
-		"size":  10000,
+		"sort": []any{map[string]any{"port": map[string]any{"order": "asc"}}},
+		"size": 10000,
 	}
 	items, _, err := s.es.Search(ctx, q)
 	if err != nil {
@@ -270,25 +273,309 @@ func assetFromSource(m map[string]any) model.Asset {
 	return a
 }
 
-// SearchAssets 资产检索（仅 ES），标准分页
-func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, page, pageSize int) (*store.SearchResult, error) {
+// SearchAssets 资产检索（仅 ES），支持标准分页及 Composite Aggregation (after_key 循环全量遍历) 聚合模式
+func (s *ESAssetStore) SearchAssets(ctx context.Context, q, kind string, aggregated bool, page, pageSize int) (*store.SearchResult, error) {
 	root := store.ParseQuery(q)
-	from := (page - 1) * pageSize
-	if from < 0 {
-		from = 0
-	}
-	query := store.BuildESQuery(root, kind, from, pageSize)
-	items, total, err := s.es.Search(ctx, query)
-	if err != nil {
-		return nil, err
-	}
 	tp := pageSize
 	if tp <= 0 {
 		tp = 20
 	}
+	if page < 1 {
+		page = 1
+	}
+
+	if !aggregated {
+		from := (page - 1) * tp
+		if from < 0 {
+			from = 0
+		}
+		query := store.BuildESQuery(root, kind, from, tp)
+		items, total, err := s.es.Search(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		totalPages := 0
+		if tp > 0 && total > 0 {
+			totalPages = int((total + int64(tp) - 1) / int64(tp))
+		}
+		return &store.SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Aggregated: false, Items: items}, nil
+	}
+
+	// ---- ES Composite Aggregation (after_key 循环遍历) 模式 ----
+	aggregatedItems := make([]map[string]any, 0)
+
+	skipIPAgg := (kind == "domain")
+	skipDomainAgg := (kind == "host" || kind == "port")
+
+	// 1. 循环遍历 IP 桶
+	if !skipIPAgg {
+		var ipAfterKey map[string]any
+		for {
+			compQuery := store.BuildESCompositeQuery(root, kind, false, ipAfterKey, 1000)
+			rawResp, err := s.es.SearchAgg(ctx, compQuery)
+			if err != nil {
+				return nil, err
+			}
+			aggs, _ := rawResp["aggregations"].(map[string]any)
+			if aggs == nil {
+				break
+			}
+			compObj, _ := aggs["ip_composite"].(map[string]any)
+			if compObj == nil {
+				break
+			}
+
+			buckets, _ := compObj["buckets"].([]any)
+			for _, b := range buckets {
+				bMap, ok := b.(map[string]any)
+				if !ok {
+					continue
+				}
+				keyMap, _ := bMap["key"].(map[string]any)
+				ipStr, _ := keyMap["ip"].(string)
+				if ipStr == "" {
+					ipStr, _ = bMap["key"].(string)
+				}
+				if ipStr == "" {
+					continue
+				}
+
+				docCount, _ := bMap["doc_count"].(float64)
+
+				topDocs, _ := bMap["top_docs"].(map[string]any)
+				hitsObj, _ := topDocs["hits"].(map[string]any)
+				hitsList, _ := hitsObj["hits"].([]any)
+
+				isTruncated := (docCount > float64(len(hitsList)))
+
+				portsMap := make(map[int]bool)
+				servicesMap := make(map[string]bool)
+				titlesMap := make(map[string]bool)
+				domainsMap := make(map[string]bool)
+				org := ""
+				asn := 0
+				os := ""
+				isIPv6 := false
+				var firstSeen, lastSeen time.Time
+
+				for _, hitItem := range hitsList {
+					h, ok := hitItem.(map[string]any)
+					if !ok {
+						continue
+					}
+					src, ok := h["_source"].(map[string]any)
+					if !ok {
+						continue
+					}
+
+					if p, ok := src["port"].(float64); ok && p > 0 {
+						portsMap[int(p)] = true
+					}
+					if s, ok := src["service"].(string); ok && s != "" {
+						servicesMap[s] = true
+					}
+					if t, ok := src["title"].(string); ok && t != "" {
+						titlesMap[t] = true
+					}
+					if d, ok := src["domain"].(string); ok && d != "" {
+						domainsMap[d] = true
+					}
+					if n, ok := src["name"].(string); ok && n != "" {
+						domainsMap[n] = true
+					}
+					if reg, ok := src["registrable_domain"].(string); ok && reg != "" {
+						domainsMap[reg] = true
+					}
+					if hst, ok := src["host"].(string); ok && hst != "" && !strings.Contains(hst, ipStr) {
+						domainsMap[hst] = true
+					}
+					if o, ok := src["org"].(string); ok && o != "" {
+						org = o
+					}
+					if a, ok := src["asn"].(float64); ok && a > 0 {
+						asn = int(a)
+					}
+					if sOS, ok := src["os"].(string); ok && sOS != "" {
+						os = sOS
+					}
+					if v6, ok := src["is_ipv6"].(bool); ok && v6 {
+						isIPv6 = true
+					}
+					if fsStr, ok := src["first_seen"].(string); ok {
+						if t, err := time.Parse(time.RFC3339, fsStr); err == nil {
+							if firstSeen.IsZero() || t.Before(firstSeen) {
+								firstSeen = t
+							}
+						}
+					}
+					if lsStr, ok := src["last_seen"].(string); ok {
+						if t, err := time.Parse(time.RFC3339, lsStr); err == nil {
+							if lastSeen.IsZero() || t.After(lastSeen) {
+								lastSeen = t
+							}
+						}
+					}
+				}
+
+				ports := make([]int, 0, len(portsMap))
+				for p := range portsMap {
+					ports = append(ports, p)
+				}
+				sort.Ints(ports)
+
+				services := make([]string, 0, len(servicesMap))
+				for s := range servicesMap {
+					services = append(services, s)
+				}
+				sort.Strings(services)
+
+				titles := make([]string, 0, len(titlesMap))
+				for t := range titlesMap {
+					titles = append(titles, t)
+				}
+				sort.Strings(titles)
+
+				domains := make([]string, 0, len(domainsMap))
+				for d := range domainsMap {
+					domains = append(domains, d)
+				}
+				sort.Strings(domains)
+
+				firstDom := ""
+				if len(domains) > 0 {
+					firstDom = domains[0]
+				}
+
+				item := map[string]any{
+					"ip":                ipStr,
+					"doc_type":          "host",
+					"aggregated":        true,
+					"open_ports":        ports,
+					"services":          services,
+					"titles":            titles,
+					"domains":           domains,
+					"domain":            firstDom,
+					"org":               org,
+					"asn":               asn,
+					"os":                os,
+					"is_ipv6":           isIPv6,
+					"truncated":         isTruncated,
+					"document_count":    int(docCount),
+					"aggregation_limit": store.MaxTopHitsSize,
+				}
+				if !firstSeen.IsZero() {
+					item["first_seen"] = firstSeen.Format(time.RFC3339)
+				}
+				if !lastSeen.IsZero() {
+					item["last_seen"] = lastSeen.Format(time.RFC3339)
+				}
+				aggregatedItems = append(aggregatedItems, item)
+			}
+
+			afterKeyObj, hasAfter := compObj["after_key"].(map[string]any)
+			if !hasAfter || len(afterKeyObj) == 0 {
+				break
+			}
+			ipAfterKey = afterKeyObj
+		}
+	}
+
+	// 2. 循环遍历纯域名桶
+	if !skipDomainAgg {
+		var domAfterKey map[string]any
+		for {
+			compQuery := store.BuildESCompositeQuery(root, kind, true, domAfterKey, 1000)
+			rawResp, err := s.es.SearchAgg(ctx, compQuery)
+			if err != nil {
+				return nil, err
+			}
+			aggs, _ := rawResp["aggregations"].(map[string]any)
+			if aggs == nil {
+				break
+			}
+			compObj, _ := aggs["domain_composite"].(map[string]any)
+			if compObj == nil {
+				break
+			}
+
+			buckets, _ := compObj["buckets"].([]any)
+			for _, b := range buckets {
+				bMap, ok := b.(map[string]any)
+				if !ok {
+					continue
+				}
+				keyMap, _ := bMap["key"].(map[string]any)
+				dKey, _ := keyMap["domain"].(string)
+				if dKey == "" {
+					dKey, _ = bMap["key"].(string)
+				}
+
+				topDocs, _ := bMap["top_docs"].(map[string]any)
+				hitsObj, _ := topDocs["hits"].(map[string]any)
+				hitsList, _ := hitsObj["hits"].([]any)
+				if len(hitsList) == 0 {
+					continue
+				}
+				firstHit, _ := hitsList[0].(map[string]any)
+				src, _ := firstHit["_source"].(map[string]any)
+				if src == nil {
+					src = make(map[string]any)
+				}
+
+				dName, _ := src["name"].(string)
+				dDomain, _ := src["domain"].(string)
+				dReg, _ := src["registrable_domain"].(string)
+				if dDomain == "" {
+					dDomain = dKey
+				}
+				if dName == "" {
+					dName = dDomain
+				}
+
+				item := map[string]any{
+					"domain":             dDomain,
+					"name":               dName,
+					"registrable_domain": dReg,
+					"doc_type":           "domain",
+					"aggregated":         true,
+					"resolved_ips":       src["resolved_ips"],
+					"truncated":          false,
+				}
+				aggregatedItems = append(aggregatedItems, item)
+			}
+
+			afterKeyObj, hasAfter := compObj["after_key"].(map[string]any)
+			if !hasAfter || len(afterKeyObj) == 0 {
+				break
+			}
+			domAfterKey = afterKeyObj
+		}
+	}
+
+	// 3. 100% 精确组总数计算
+	total := int64(len(aggregatedItems))
 	totalPages := 0
 	if tp > 0 && total > 0 {
 		totalPages = int((total + int64(tp) - 1) / int64(tp))
 	}
-	return &store.SearchResult{Total: total, Page: page, PageSize: tp, TotalPages: totalPages, Items: items}, nil
+
+	// 4. 绝对安全的范围切片
+	from := (page - 1) * tp
+	if from > int(total) {
+		from = int(total)
+	}
+	to := from + tp
+	if to > int(total) {
+		to = int(total)
+	}
+	pageItems := aggregatedItems[from:to]
+
+	return &store.SearchResult{
+		Total:      total,
+		Page:       page,
+		PageSize:   tp,
+		TotalPages: totalPages,
+		Aggregated: true,
+		Items:      pageItems,
+	}, nil
 }

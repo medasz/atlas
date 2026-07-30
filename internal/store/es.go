@@ -279,3 +279,30 @@ func (e *ESClient) Count(ctx context.Context) (int64, error) {
 	}
 	return out.Count, nil
 }
+
+// SearchAgg 发送带 aggs 聚合的 ES 查询，返回全量 ES HTTP 响应 Map（包含 aggregations 节点）
+func (e *ESClient) SearchAgg(ctx context.Context, query map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(query)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/%s/_search", e.addr, e.index), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("es search status %d", resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

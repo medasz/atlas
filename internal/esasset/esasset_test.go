@@ -2,6 +2,7 @@ package esasset
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -66,11 +67,178 @@ func TestSearchAssets(t *testing.T) {
 	defer srv.Close()
 
 	s := New(store.NewES(srv.URL, "assets"))
-	res, err := s.SearchAssets(context.Background(), "port=22", "", 1, 20)
+	res, err := s.SearchAssets(context.Background(), "port=22", "", false, 1, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Total != 1 || len(res.Items) != 1 {
 		t.Fatalf("bad result: %+v", res)
+	}
+}
+
+// TestSearchAssets_Aggregated 验证 ES Composite Aggregation 限制 (top_hits<=100)、截断感知、name-only 纯域名兼容与按 kind 跳过循环
+func TestSearchAssets_Aggregated(t *testing.T) {
+	var requestBodies []map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestBodies = append(requestBodies, body)
+
+		aggs, _ := body["aggs"].(map[string]any)
+		ipComp, _ := aggs["ip_composite"].(map[string]any)
+		domComp, _ := aggs["domain_composite"].(map[string]any)
+
+		if ipComp != nil {
+			compObj, _ := ipComp["composite"].(map[string]any)
+			after, _ := compObj["after"].(map[string]any)
+
+			// 模拟 IP 批次 1 (1.1.1.1 doc_count=150 > len(hits)=2，发生截断)
+			if len(after) == 0 {
+				w.Write([]byte(`{
+					"aggregations": {
+						"ip_composite": {
+							"after_key": {"ip": "1.1.1.1"},
+							"buckets": [
+								{
+									"key": {"ip": "1.1.1.1"},
+									"doc_count": 150,
+									"top_docs": {
+										"hits": {
+											"hits": [
+												{"_source": {"doc_type": "host", "ip": "1.1.1.1", "org": "Cloudflare", "os": "Linux"}},
+												{"_source": {"doc_type": "port", "ip": "1.1.1.1", "port": 443, "service": "https", "title": "Secure Site", "host": "example.com"}}
+											]
+										}
+									}
+								}
+							]
+						}
+					}
+				}`))
+				return
+			}
+
+			// 模拟 IP 批次 2 (最后一批，2.2.2.2 doc_count=1 未截断)
+			w.Write([]byte(`{
+				"aggregations": {
+					"ip_composite": {
+						"buckets": [
+							{
+								"key": {"ip": "2.2.2.2"},
+								"doc_count": 1,
+								"top_docs": {
+									"hits": {
+										"hits": [
+											{"_source": {"doc_type": "port", "ip": "2.2.2.2", "port": 22, "service": "ssh"}}
+										]
+									}
+								}
+							}
+						]
+					}
+				}
+			}`))
+			return
+		}
+
+		if domComp != nil {
+			// 模拟纯域名批次 (含一个 name-only 的域名文档)
+			w.Write([]byte(`{
+				"aggregations": {
+					"domain_composite": {
+						"buckets": [
+							{
+								"key": {"domain": "nameonly.org"},
+								"doc_count": 1,
+								"top_docs": {
+									"hits": {
+										"hits": [
+											{"_source": {"doc_type": "domain", "name": "nameonly.org", "registrable_domain": "nameonly.org"}}
+										]
+									}
+								}
+							}
+						]
+					}
+				}
+			}`))
+			return
+		}
+	}))
+	defer srv.Close()
+
+	s := New(store.NewES(srv.URL, "assets"))
+
+	// 测试 1: 发起聚合请求并断言 top_hits size <= 100 限制
+	requestBodies = nil
+	res, err := s.SearchAssets(context.Background(), "", "", true, 1, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for i, reqBody := range requestBodies {
+		aggs, _ := reqBody["aggs"].(map[string]any)
+		for _, v := range aggs {
+			if aggMap, ok := v.(map[string]any); ok {
+				if subAggs, ok := aggMap["aggs"].(map[string]any); ok {
+					if topDocs, ok := subAggs["top_docs"].(map[string]any); ok {
+						if topHits, ok := topDocs["top_hits"].(map[string]any); ok {
+							if sz, ok := topHits["size"].(float64); ok {
+								if sz > 100 {
+									t.Errorf("request %d top_hits.size (%v) exceeds 100 limit", i, sz)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 测试 2: 验证截断标志与元数据 (1.1.1.1 doc_count=150 > hits=2)
+	if len(res.Items) < 1 {
+		t.Fatalf("expected items, got empty")
+	}
+	item1 := res.Items[0]
+	if trunc, ok := item1["truncated"].(bool); !ok || !trunc {
+		t.Errorf("expected 1.1.1.1 truncated to be true, got %v", item1["truncated"])
+	}
+	if docCnt, ok := item1["document_count"].(int); !ok || docCnt != 150 {
+		t.Errorf("expected document_count=150, got %v", item1["document_count"])
+	}
+	if aggLim, ok := item1["aggregation_limit"].(int); !ok || aggLim != 100 {
+		t.Errorf("expected aggregation_limit=100, got %v", item1["aggregation_limit"])
+	}
+
+	// 测试 3: 验证 name-only 纯域名提取
+	var nameOnlyItem map[string]any
+	for _, it := range res.Items {
+		if it["name"] == "nameonly.org" || it["domain"] == "nameonly.org" {
+			nameOnlyItem = it
+			break
+		}
+	}
+	if nameOnlyItem == nil {
+		t.Errorf("expected name-only domain 'nameonly.org' to be parsed and included")
+	}
+
+	// 测试 4: 验证 kind 过滤跳过循环
+	requestBodies = nil
+	_, _ = s.SearchAssets(context.Background(), "", "host", true, 1, 10)
+	for _, reqBody := range requestBodies {
+		aggs, _ := reqBody["aggs"].(map[string]any)
+		if _, hasDomComp := aggs["domain_composite"]; hasDomComp {
+			t.Errorf("kind=host must skip domain_composite aggregation")
+		}
+	}
+
+	requestBodies = nil
+	_, _ = s.SearchAssets(context.Background(), "", "domain", true, 1, 10)
+	for _, reqBody := range requestBodies {
+		aggs, _ := reqBody["aggs"].(map[string]any)
+		if _, hasIPComp := aggs["ip_composite"]; hasIPComp {
+			t.Errorf("kind=domain must skip ip_composite aggregation")
+		}
 	}
 }

@@ -28,6 +28,11 @@
           </svg>
           <span>检索</span>
         </button>
+        <button class="agg-trigger" :class="{ active: isAggregated }" type="button"
+          @click="toggleAggregated" title="切换 IP 聚合视图">
+          <span class="st-ico" v-html="icons.agg"></span>
+          <span class="st-label">IP 聚合</span>
+        </button>
         <button class="syntax-trigger" :class="{ active: syntaxOpen }" type="button"
           @click="syntaxOpen = !syntaxOpen" title="检索语法手册">
           <span class="st-ico" v-html="icons.book"></span>
@@ -46,25 +51,40 @@
     <div class="results-section">
       <div class="results-meta">
         <span class="results-count" v-if="total">
-          共 <span class="count-num">{{ total }}</span> 条 · 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页
+          共 <span class="count-num">{{ total }}</span> 条 <span v-if="isAggregated">(已聚合)</span> · 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页
         </span>
       </div>
 
       <el-table :data="items" v-loading="loading" stripe class="assets-table">
-        <el-table-column prop="doc_type" label="类型" width="90" />
-        <el-table-column label="目标" width="220">
-          <template #default="{ row }"><span class="cell-target">{{ row.name || row.ip || '-' }}</span></template>
+        <el-table-column label="目标" width="180">
+          <template #default="{ row }">
+            <span class="cell-target">{{ (row.doc_type === 'domain' || (!row.ip && row.domain)) ? (row.domain || row.name || row.registrable_domain || '-') : (row.ip || '-') }}</span>
+          </template>
         </el-table-column>
-        <el-table-column prop="port" label="端口" width="80" />
-        <el-table-column prop="service" label="服务" width="120" />
-        <el-table-column prop="version" label="版本" width="130" />
-        <el-table-column prop="title" label="标题" min-width="170" show-overflow-tooltip>
-          <template #default="{ row }"><span class="cell-title">{{ row.title || '-' }}</span></template>
+        <el-table-column label="域名" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ Array.isArray(row.domains) && row.domains.length ? row.domains.join(', ') : (row.domain || row.name || row.host || row.registrable_domain || '-') }}</span>
+          </template>
         </el-table-column>
-        <el-table-column prop="server" label="服务" width="150" show-overflow-tooltip />
-        <el-table-column v-if="hasDomain" label="根域名" prop="registrable_domain" width="170" show-overflow-tooltip />
-        <el-table-column prop="org" label="组织" width="150" show-overflow-tooltip />
-        <el-table-column prop="asn" label="ASN" width="90" />
+        <el-table-column label="端口" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ Array.isArray(row.open_ports) ? (row.open_ports.length ? row.open_ports.join(', ') : '-') : (row.port || '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="服务" width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ Array.isArray(row.services) ? (row.services.length ? row.services.join(', ') : '-') : (row.service || '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="version" label="版本" width="120" />
+        <el-table-column label="标题" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="cell-title">{{ Array.isArray(row.titles) ? (row.titles.length ? row.titles.join(' | ') : '-') : (row.title || '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="server" label="服务(Web)" width="130" show-overflow-tooltip />
+        <el-table-column prop="org" label="组织" width="140" show-overflow-tooltip />
+        <el-table-column prop="asn" label="ASN" width="80" />
         <el-table-column label="IPv6" width="72" align="center">
           <template #default="{ row }">
             <span class="ipv6-badge" :class="{ on: row.is_ipv6 }">{{ row.is_ipv6 ? 'v6' : 'v4' }}</span>
@@ -72,7 +92,7 @@
         </el-table-column>
         <el-table-column label="" width="80" align="center">
           <template #default="{ row }">
-            <button v-if="row.doc_type==='host'" class="detail-trigger" @click="openHost(row.ip)">
+            <button v-if="row.ip" class="detail-trigger" @click="openHost(row.ip)">
               <span>详情</span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
             </button>
@@ -156,7 +176,8 @@ import DorkCheatSheet from '../components/DorkCheatSheet.vue'
 
 const icons = {
   host: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>',
-  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  agg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor"/><circle cx="16" cy="12" r="2" fill="currentColor"/></svg>'
 }
 
 const q = ref('')
@@ -165,6 +186,7 @@ const loading = ref(false)
 const hostVisible = ref(false)
 const detail = ref(null)
 const syntaxOpen = ref(false)
+const isAggregated = ref(false)
 
 // 分页状态
 const page = ref(1)
@@ -185,12 +207,17 @@ const hostItems = computed(() => {
   ]
 })
 
+function toggleAggregated() {
+  isAggregated.value = !isAggregated.value
+  doSearch(true)
+}
+
 // reset=true 时回到首页（检索条件变化或清空）
 async function doSearch(reset) {
   if (reset) page.value = 1
   loading.value = true
   try {
-    const r = await api.searchAssets(q.value, '', page.value, pageSize.value)
+    const r = await api.searchAssets(q.value, '', page.value, pageSize.value, isAggregated.value)
     items.value = r.items || []
     total.value = r.total || 0
   } finally {
@@ -290,7 +317,8 @@ onMounted(() => doSearch(true))
 .search-btn:hover { border-color: rgba(0,212,255,0.5); box-shadow: 0 0 20px rgba(0,212,255,0.18), inset 0 0 18px rgba(0,212,255,0.04); }
 .search-btn.loading svg { animation: spin 1s linear infinite; }
 
-/* ===== 语法弹层入口（搜索框右侧） ===== */
+/* ===== 语法/聚合 按钮 ===== */
+.agg-trigger,
 .syntax-trigger {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 11px 16px;
@@ -301,8 +329,11 @@ onMounted(() => doSearch(true))
   font-family: var(--font-heading); font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
   cursor: pointer; transition: all 0.22s ease; white-space: nowrap;
 }
+.agg-trigger svg,
 .syntax-trigger svg { width: 15px; height: 15px; }
+.agg-trigger:hover,
 .syntax-trigger:hover { border-color: rgba(0, 212, 255, 0.4); color: var(--accent-cyan); }
+.agg-trigger.active,
 .syntax-trigger.active {
   color: var(--accent-cyan);
   background: rgba(0, 212, 255, 0.08);

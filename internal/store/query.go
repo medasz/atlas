@@ -422,11 +422,12 @@ func wildPG(v string) string {
 
 // SearchResult 资产检索的结构化分页结果
 type SearchResult struct {
-	Total      int64            `json:"total"`       // 总记录数
-	Page       int              `json:"page"`        // 当前页码（从 1 开始）
-	PageSize   int              `json:"page_size"`   // 每页条数
-	TotalPages int              `json:"total_pages"` // 总页数
-	Items      []map[string]any `json:"items"`       // 当前页数据列表
+	Total      int64            `json:"total"`                // 总记录数
+	Page       int              `json:"page"`                 // 当前页码（从 1 开始）
+	PageSize   int              `json:"page_size"`            // 每页条数
+	TotalPages int              `json:"total_pages"`          // 总页数
+	Aggregated bool             `json:"aggregated,omitempty"` // 是否为 IP 聚合结果
+	Items      []map[string]any `json:"items"`                // 当前页数据列表
 }
 
 // BuildESQuery 生成 ES 查询并注入分页（from/size）。供 esasset 检索使用。
@@ -448,4 +449,103 @@ func BuildESQuery(root node, docType string, from, size int) map[string]any {
 		return map[string]any{"query": map[string]any{"match_all": map[string]any{}}, "from": from, "size": size}
 	}
 	return map[string]any{"query": map[string]any{"bool": map[string]any{"must": must}}, "from": from, "size": size}
+}
+
+const MaxTopHitsSize = 100
+
+// BuildESCompositeQuery 生成符合 ES 8.13 限制 (top_hits.size <= 100) 的 Composite Aggregation DSL
+func BuildESCompositeQuery(root node, docType string, isDomain bool, afterKey map[string]any, batchSize int) map[string]any {
+	must := []any{}
+	if docType != "" {
+		must = append(must, map[string]any{"term": map[string]any{"doc_type": docType}})
+	}
+	if root != nil {
+		must = append(must, root.toES())
+	}
+
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+
+	if !isDomain {
+		var queryBody map[string]any
+		if len(must) == 0 {
+			queryBody = map[string]any{"match_all": map[string]any{}}
+		} else {
+			queryBody = map[string]any{"bool": map[string]any{"must": must}}
+		}
+
+		comp := map[string]any{
+			"size": batchSize,
+			"sources": []any{
+				map[string]any{
+					"ip": map[string]any{
+						"terms": map[string]any{"field": "ip"},
+					},
+				},
+			},
+		}
+		if len(afterKey) > 0 {
+			comp["after"] = afterKey
+		}
+
+		return map[string]any{
+			"size":  0,
+			"query": queryBody,
+			"aggs": map[string]any{
+				"ip_composite": map[string]any{
+					"composite": comp,
+					"aggs": map[string]any{
+						"top_docs": map[string]any{
+							"top_hits": map[string]any{"size": MaxTopHitsSize},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	domainMust := append(must, map[string]any{"term": map[string]any{"doc_type": "domain"}})
+	queryBody := map[string]any{
+		"bool": map[string]any{
+			"must": domainMust,
+			"must_not": []any{
+				map[string]any{"exists": map[string]any{"field": "ip"}},
+			},
+		},
+	}
+
+	comp := map[string]any{
+		"size": batchSize,
+		"sources": []any{
+			map[string]any{
+				"domain": map[string]any{
+					"terms": map[string]any{
+						"script": map[string]any{
+							"source": "doc.containsKey('domain') && !doc['domain'].empty ? doc['domain'].value : (doc.containsKey('name') && !doc['name'].empty ? doc['name'].value : (doc.containsKey('registrable_domain') && !doc['registrable_domain'].empty ? doc['registrable_domain'].value : ''))",
+							"lang":   "painless",
+						},
+					},
+				},
+			},
+		},
+	}
+	if len(afterKey) > 0 {
+		comp["after"] = afterKey
+	}
+
+	return map[string]any{
+		"size":  0,
+		"query": queryBody,
+		"aggs": map[string]any{
+			"domain_composite": map[string]any{
+				"composite": comp,
+				"aggs": map[string]any{
+					"top_docs": map[string]any{
+						"top_hits": map[string]any{"size": 10},
+					},
+				},
+			},
+		},
+	}
 }
