@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -162,10 +163,19 @@ func defaultConfig() *Config {
 // Row 是 QueryRow 返回行的最小接口（pgx.Row 天然满足）。
 type Row interface{ Scan(dest ...any) error }
 
+// Rows 是 Query 返回多行的最小接口
+type Rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Close()
+	Err() error
+}
+
 // DB 解耦存储层的最小接口；*pgxpool.Pool 经 PoolDB 适配后满足。
 type DB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) Row
+	Query(ctx context.Context, sql string, args ...any) (Rows, error)
 }
 
 // PoolDB 将 *pgxpool.Pool 适配为 config.DB（pgx.Row 已实现 Row.Scan）。
@@ -184,22 +194,161 @@ func (p PoolDB) QueryRow(ctx context.Context, sql string, args ...any) Row {
 	return p.pool.QueryRow(ctx, sql, args...)
 }
 
+func (p PoolDB) Query(ctx context.Context, sql string, args ...any) (Rows, error) {
+	rows, err := p.pool.Query(ctx, sql, args...)
+	return rows, err
+}
+
 const upsertConfigSQL = `INSERT INTO config(key,value,updated_at) VALUES($1,$2,now())
 	ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`
 
-// UpsertSection 将某配置段 JSON 序列化后 upsert 入库。
-func UpsertSection(ctx context.Context, db DB, key string, v any) error {
+// configToKV 将 Config 结构体转为下划线 KEY 的字符串 Map
+func configToKV(cfg *Config) map[string]string {
+	return map[string]string{
+		"scan_default_mode":           cfg.Scan.DefaultMode,
+		"scan_default_port_range":    cfg.Scan.DefaultPortRange,
+		"scan_max_concurrency":      fmt.Sprintf("%d", cfg.Scan.MaxConcurrency),
+		"scan_per_target_rps":         fmt.Sprintf("%d", cfg.Scan.PerTargetRPS),
+		"scan_port_chunk_size":        fmt.Sprintf("%d", cfg.Scan.PortChunkSize),
+		"scan_raw_capture_window_sec": fmt.Sprintf("%d", cfg.Scan.RawCaptureWindowSec),
+		"scan_raw_retries":            fmt.Sprintf("%d", cfg.Scan.RawRetries),
+		"scan_record_filtered_ports":  fmt.Sprintf("%t", cfg.Scan.RecordFilteredPorts),
+		"scan_record_closed_ports":    fmt.Sprintf("%t", cfg.Scan.RecordClosedPorts),
+		"scan_install_rst_drop":       fmt.Sprintf("%t", cfg.Scan.InstallRstDrop),
+		"scan_raw_iface":              cfg.Scan.RawIface,
+		"auth_enabled":                fmt.Sprintf("%t", cfg.Auth.Enabled),
+		"auth_password":               cfg.Auth.Password,
+		"auth_secret":                 cfg.Auth.Secret,
+		"audit_enabled":               fmt.Sprintf("%t", cfg.Audit.Enabled),
+		"http_addr":                   cfg.HTTP.Addr,
+	}
+}
+
+// applyKVToConfig 将 KV 字典解析填入 Config
+func applyKVToConfig(cfg *Config, kv map[string]string) {
+	for k, v := range kv {
+		switch k {
+		case "scan_default_mode":
+			cfg.Scan.DefaultMode = v
+		case "scan_default_port_range":
+			cfg.Scan.DefaultPortRange = v
+		case "scan_max_concurrency":
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Scan.MaxConcurrency = n
+			}
+		case "scan_per_target_rps":
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Scan.PerTargetRPS = n
+			}
+		case "scan_port_chunk_size":
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Scan.PortChunkSize = n
+			}
+		case "scan_raw_capture_window_sec":
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Scan.RawCaptureWindowSec = n
+			}
+		case "scan_raw_retries":
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Scan.RawRetries = n
+			}
+		case "scan_record_filtered_ports":
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.Scan.RecordFilteredPorts = b
+			}
+		case "scan_record_closed_ports":
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.Scan.RecordClosedPorts = b
+			}
+		case "scan_install_rst_drop":
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.Scan.InstallRstDrop = b
+			}
+		case "scan_raw_iface":
+			cfg.Scan.RawIface = v
+		case "auth_enabled":
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.Auth.Enabled = b
+			}
+		case "auth_password":
+			cfg.Auth.Password = v
+		case "auth_secret":
+			cfg.Auth.Secret = v
+		case "audit_enabled":
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.Audit.Enabled = b
+			}
+		case "http_addr":
+			cfg.HTTP.Addr = v
+		}
+	}
+}
+
+// sectionToKV 将某模块段转为下划线 KV
+func sectionToKV(section string, v any) (map[string]string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("序列化配置段 %s: %w", key, err)
+		return nil, fmt.Errorf("序列化配置段 %s: %w", section, err)
 	}
-	if _, err := db.Exec(ctx, upsertConfigSQL, key, string(b)); err != nil {
-		return fmt.Errorf("写入配置段 %s: %w", key, err)
+	out := make(map[string]string)
+	switch section {
+	case "scan":
+		var sc ScanConfig
+		if err := json.Unmarshal(b, &sc); err != nil {
+			return nil, err
+		}
+		out["scan_default_mode"] = sc.DefaultMode
+		out["scan_default_port_range"] = sc.DefaultPortRange
+		out["scan_max_concurrency"] = fmt.Sprintf("%d", sc.MaxConcurrency)
+		out["scan_per_target_rps"] = fmt.Sprintf("%d", sc.PerTargetRPS)
+		out["scan_port_chunk_size"] = fmt.Sprintf("%d", sc.PortChunkSize)
+		out["scan_raw_capture_window_sec"] = fmt.Sprintf("%d", sc.RawCaptureWindowSec)
+		out["scan_raw_retries"] = fmt.Sprintf("%d", sc.RawRetries)
+		out["scan_record_filtered_ports"] = fmt.Sprintf("%t", sc.RecordFilteredPorts)
+		out["scan_record_closed_ports"] = fmt.Sprintf("%t", sc.RecordClosedPorts)
+		out["scan_install_rst_drop"] = fmt.Sprintf("%t", sc.InstallRstDrop)
+		out["scan_raw_iface"] = sc.RawIface
+	case "auth":
+		var ac AuthConfig
+		if err := json.Unmarshal(b, &ac); err != nil {
+			return nil, err
+		}
+		out["auth_enabled"] = fmt.Sprintf("%t", ac.Enabled)
+		out["auth_password"] = ac.Password
+		out["auth_secret"] = ac.Secret
+	case "audit":
+		var ac AuditConfig
+		if err := json.Unmarshal(b, &ac); err != nil {
+			return nil, err
+		}
+		out["audit_enabled"] = fmt.Sprintf("%t", ac.Enabled)
+	case "http":
+		var hc HTTPConfig
+		if err := json.Unmarshal(b, &hc); err != nil {
+			return nil, err
+		}
+		out["http_addr"] = hc.Addr
+	default:
+		return nil, fmt.Errorf("未知配置段: %s", section)
+	}
+	return out, nil
+}
+
+// UpsertSection 将某配置段展平为 KV 后 upsert 入库。
+func UpsertSection(ctx context.Context, db DB, key string, v any) error {
+	kvMap, err := sectionToKV(key, v)
+	if err != nil {
+		return err
+	}
+	for k, val := range kvMap {
+		if _, err := db.Exec(ctx, upsertConfigSQL, k, val); err != nil {
+			return fmt.Errorf("写入配置项 %s: %w", k, err)
+		}
 	}
 	return nil
 }
 
-// EnsureSeeded 表空时按 defaultConfig 播种四段；非空则跳过。
+// EnsureSeeded 表空时按 defaultConfig 播种单项 KV；非空则跳过。
 func EnsureSeeded(ctx context.Context, db DB) error {
 	var n int
 	if err := db.QueryRow(ctx, "SELECT count(*) FROM config").Scan(&n); err != nil {
@@ -212,54 +361,42 @@ func EnsureSeeded(ctx context.Context, db DB) error {
 	if n > 0 {
 		return nil
 	}
-	seed := map[string]any{
-		"scan":  defaultConfig().Scan,
-		"audit": defaultConfig().Audit,
-		"auth":  defaultConfig().Auth,
-		"http":  defaultConfig().HTTP,
-	}
-	for k, v := range seed {
-		if err := UpsertSection(ctx, db, k, v); err != nil {
-			return err
+	def := defaultConfig()
+	kv := configToKV(def)
+	for k, v := range kv {
+		if _, err := db.Exec(ctx, upsertConfigSQL, k, v); err != nil {
+			return fmt.Errorf("播种配置项 %s: %w", k, err)
 		}
 	}
 	return nil
 }
 
-// LoadFromDB 确保已播种并读四段进 *Config；连接段由 boot 填充。
+// LoadFromDB 确保已播种并读所有单项 KV 进 *Config；连接段由 boot 填充。
 func LoadFromDB(ctx context.Context, db DB, boot *Bootstrap) (*Config, error) {
 	if err := EnsureSeeded(ctx, db); err != nil {
 		return nil, err
 	}
 	cfg := defaultConfig()
-	for _, key := range []string{"scan", "audit", "auth", "http"} {
-		row := db.QueryRow(ctx, "SELECT value FROM config WHERE key=$1", key)
-		var val string
-		if err := row.Scan(&val); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
-			return nil, fmt.Errorf("读取配置段 %s: %w", key, err)
-		}
-		switch key {
-		case "scan":
-			if err := json.Unmarshal([]byte(val), &cfg.Scan); err != nil {
-				return nil, fmt.Errorf("解析 scan: %w", err)
-			}
-		case "audit":
-			if err := json.Unmarshal([]byte(val), &cfg.Audit); err != nil {
-				return nil, fmt.Errorf("解析 audit: %w", err)
-			}
-		case "auth":
-			if err := json.Unmarshal([]byte(val), &cfg.Auth); err != nil {
-				return nil, fmt.Errorf("解析 auth: %w", err)
-			}
-		case "http":
-			if err := json.Unmarshal([]byte(val), &cfg.HTTP); err != nil {
-				return nil, fmt.Errorf("解析 http: %w", err)
-			}
-		}
+	rows, err := db.Query(ctx, "SELECT key, value FROM config")
+	if err != nil {
+		return nil, fmt.Errorf("查询全量配置: %w", err)
 	}
+	defer rows.Close()
+
+	kv := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("扫描配置行: %w", err)
+		}
+		kv[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历配置行: %w", err)
+	}
+
+	applyKVToConfig(cfg, kv)
+
 	cfg.Postgres.DSN = boot.PGDSN
 	cfg.NATS.URL = boot.NATSURL
 	cfg.Elastic.Addr = boot.ESAddr
@@ -268,3 +405,4 @@ func LoadFromDB(ctx context.Context, db DB, boot *Bootstrap) (*Config, error) {
 	}
 	return cfg, nil
 }
+

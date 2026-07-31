@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"atlas/internal/config"
 	"atlas/internal/model"
 )
 
@@ -145,6 +146,53 @@ func (s *Store) InsertAudit(ctx context.Context, operator, target, taskID, actio
 		INSERT INTO audit_logs (operator, target, task_id, action) VALUES ($1,$2,$3,$4)`,
 		operator, target, taskID, action)
 	return err
+}
+
+// ListAuditLogs 分页与关键词检索审计日志
+func (s *Store) ListAuditLogs(ctx context.Context, page, pageSize int, search string) ([]model.AuditLog, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	var total int64
+	var rows pgx.Rows
+	var err error
+
+	if search != "" {
+		pattern := "%" + search + "%"
+		_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE operator LIKE $1 OR target LIKE $1 OR task_id LIKE $1 OR action LIKE $1`, pattern).Scan(&total)
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, operator, time, target, task_id, action
+			FROM audit_logs
+			WHERE operator LIKE $1 OR target LIKE $1 OR task_id LIKE $1 OR action LIKE $1
+			ORDER BY time DESC, id DESC
+			LIMIT $2 OFFSET $3`, pattern, pageSize, offset)
+	} else {
+		_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs`).Scan(&total)
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, operator, time, target, task_id, action
+			FROM audit_logs
+			ORDER BY time DESC, id DESC
+			LIMIT $1 OFFSET $2`, pageSize, offset)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []model.AuditLog{}
+	for rows.Next() {
+		var logItem model.AuditLog
+		if err := rows.Scan(&logItem.ID, &logItem.Operator, &logItem.Time, &logItem.Target, &logItem.TaskID, &logItem.Action); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, logItem)
+	}
+	return out, total, rows.Err()
 }
 
 // AddBlacklist 新增黑名单条目（type,value 唯一，重复忽略）
@@ -414,12 +462,28 @@ func (s *Store) ListTemplates(ctx context.Context) ([]struct {
 	return out, rows.Err()
 }
 
-// UpsertConfigSection 写入单配置段（JSON 文本），作为配置唯一 DB 写边界。
-func (s *Store) UpsertConfigSection(ctx context.Context, key, value string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO config(key,value,updated_at) VALUES($1,$2,now())
-		ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, key, value)
+// UpsertConfigSection 写入单配置段（调用 config.UpsertSection 展平为单项 KV 入库）
+func (s *Store) UpsertConfigSection(ctx context.Context, section, valueJSON string) error {
+	var obj any
+	if err := json.Unmarshal([]byte(valueJSON), &obj); err != nil {
+		return config.UpsertSection(ctx, config.NewPoolDB(s.pool), section, valueJSON)
+	}
+	return config.UpsertSection(ctx, config.NewPoolDB(s.pool), section, obj)
+}
+
+// UpsertIPLifecycle 更新或插入主机在线打卡与生命周期状态
+func (s *Store) UpsertIPLifecycle(ctx context.Context, ip string, isV6 bool, openPorts int) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ip_survivals (ip, open_ports, is_ipv6, first_seen, last_seen)
+		VALUES ($1, $2, $3, now(), now())
+		ON CONFLICT (ip) DO UPDATE SET
+			open_ports = EXCLUDED.open_ports,
+			is_ipv6    = EXCLUDED.is_ipv6,
+			last_seen  = EXCLUDED.last_seen`,
+		ip, openPorts, isV6)
 	if err != nil {
-		return fmt.Errorf("upsert config %s: %w", key, err)
+		return fmt.Errorf("upsert ip lifecycle %s: %w", ip, err)
 	}
 	return nil
 }
+

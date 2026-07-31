@@ -107,7 +107,9 @@ func main() {
 
 	// 资产探测引擎（Issue #4）：注入为资产扫描处理器，传入扫描配置（模式 + raw 参数）
 	scanner := scan.New(assetStore, limiter, defaultPorts, fp, cfg.Scan)
+	scanner.SetStore(st)
 	taskSvc.SetProcessor(scanner)
+
 
 	// 漏洞检测引擎（Issue #10~#13）：加载目录模板 + 已持久化模板
 	vulnEngine, err := vuln.New(st, limiter, *templatesDir)

@@ -2,7 +2,6 @@ package esasset
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -110,16 +109,48 @@ func assetToDoc(a model.Asset) map[string]any {
 	return m
 }
 
-// GetHost 按 IP 读取主机资产；未找到返回 assetstore.ErrNotFound
+// GetHost 按 IP 从端口资产集中提取该主机汇总属性；未找到返回 assetstore.ErrNotFound
 func (s *ESAssetStore) GetHost(ctx context.Context, ip string) (model.Asset, error) {
-	src, err := s.es.Get(ctx, "host:"+ip)
+	ports, err := s.ListPortsByIP(ctx, ip)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return model.Asset{}, assetstore.ErrNotFound
-		}
 		return model.Asset{}, err
 	}
-	return assetFromSource(src), nil
+	if len(ports) == 0 {
+		return model.Asset{}, assetstore.ErrNotFound
+	}
+	// 合并该 IP 端口文档的主机元数据属性
+	host := model.Asset{IP: ip}
+	for _, p := range ports {
+		if p.OS != "" {
+			host.OS = p.OS
+		}
+		if p.Org != "" {
+			host.Org = p.Org
+		}
+		if p.ASN > 0 {
+			host.ASN = p.ASN
+		}
+		if p.IsIPv6 {
+			host.IsIPv6 = p.IsIPv6
+		}
+		if host.Domain == "" && p.Domain != "" {
+			host.Domain = p.Domain
+		}
+		if host.Host == "" && p.Host != "" {
+			host.Host = p.Host
+		}
+		if p.FirstSeen.IsZero() == false {
+			if host.FirstSeen.IsZero() || p.FirstSeen.Before(host.FirstSeen) {
+				host.FirstSeen = p.FirstSeen
+			}
+		}
+		if p.LastSeen.IsZero() == false {
+			if host.LastSeen.IsZero() || p.LastSeen.After(host.LastSeen) {
+				host.LastSeen = p.LastSeen
+			}
+		}
+	}
+	return host, nil
 }
 
 // ListPortsByIP 列出某 IP 的全部端口（按 port 升序）
@@ -149,8 +180,8 @@ func (s *ESAssetStore) ListDomains(ctx context.Context) ([]model.Asset, error) {
 		"query": map[string]any{"bool": map[string]any{"must": []any{
 			map[string]any{"exists": map[string]any{"field": "domain"}},
 		}}},
-		"sort":  []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
-		"size":  10000,
+		"sort": []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
+		"size": 10000,
 	}
 	items, _, err := s.es.Search(ctx, q)
 	if err != nil {
@@ -303,309 +334,190 @@ func (s *ESAssetStore) SearchAssets(ctx context.Context, q string, aggregated bo
 	// ---- ES Composite Aggregation (after_key 循环遍历) 模式 ----
 	aggregatedItems := make([]map[string]any, 0)
 
-	skipIPAgg := false
-	skipDomainAgg := false
+	// 循环遍历 IP 桶
+	var ipAfterKey map[string]any
+	for {
+		compQuery := store.BuildESCompositeQuery(root, ipAfterKey, 1000)
+		rawResp, err := s.es.SearchAgg(ctx, compQuery)
+		if err != nil {
+			return nil, err
+		}
+		aggs, _ := rawResp["aggregations"].(map[string]any)
+		if aggs == nil {
+			break
+		}
+		compObj, _ := aggs["ip_composite"].(map[string]any)
+		if compObj == nil {
+			break
+		}
 
-	// 1. 循环遍历 IP 桶
-	if !skipIPAgg {
-		var ipAfterKey map[string]any
-		for {
-			compQuery := store.BuildESCompositeQuery(root, false, ipAfterKey, 1000)
-			rawResp, err := s.es.SearchAgg(ctx, compQuery)
-			if err != nil {
-				return nil, err
+		buckets, _ := compObj["buckets"].([]any)
+		for _, b := range buckets {
+			bMap, ok := b.(map[string]any)
+			if !ok {
+				continue
 			}
-			aggs, _ := rawResp["aggregations"].(map[string]any)
-			if aggs == nil {
-				break
+			keyMap, _ := bMap["key"].(map[string]any)
+			ipStr, _ := keyMap["ip"].(string)
+			if ipStr == "" {
+				ipStr, _ = bMap["key"].(string)
 			}
-			compObj, _ := aggs["ip_composite"].(map[string]any)
-			if compObj == nil {
-				break
+			if ipStr == "" {
+				continue
 			}
 
-			buckets, _ := compObj["buckets"].([]any)
-			for _, b := range buckets {
-				bMap, ok := b.(map[string]any)
+			docCount, _ := bMap["doc_count"].(float64)
+
+			topDocs, _ := bMap["top_docs"].(map[string]any)
+			hitsObj, _ := topDocs["hits"].(map[string]any)
+			hitsList, _ := hitsObj["hits"].([]any)
+
+			isTruncated := (docCount > float64(len(hitsList)))
+
+			portsMap := make(map[int]bool)
+			servicesMap := make(map[string]bool)
+			titlesMap := make(map[string]bool)
+			domainsMap := make(map[string]bool)
+			techSet := make(map[string]bool)
+			resolvedSet := make(map[string]bool)
+			cnameSet := make(map[string]bool)
+			org := ""
+			asn := 0
+			os := ""
+			isIPv6 := false
+			var firstSeen, lastSeen time.Time
+
+			for _, hitItem := range hitsList {
+				h, ok := hitItem.(map[string]any)
 				if !ok {
 					continue
 				}
-				keyMap, _ := bMap["key"].(map[string]any)
-				ipStr, _ := keyMap["ip"].(string)
-				if ipStr == "" {
-					ipStr, _ = bMap["key"].(string)
-				}
-				if ipStr == "" {
+				src, ok := h["_source"].(map[string]any)
+				if !ok {
 					continue
 				}
 
-				docCount, _ := bMap["doc_count"].(float64)
-
-				topDocs, _ := bMap["top_docs"].(map[string]any)
-				hitsObj, _ := topDocs["hits"].(map[string]any)
-				hitsList, _ := hitsObj["hits"].([]any)
-
-				isTruncated := (docCount > float64(len(hitsList)))
-
-				portsMap := make(map[int]bool)
-				servicesMap := make(map[string]bool)
-				titlesMap := make(map[string]bool)
-				domainsMap := make(map[string]bool)
-				org := ""
-				asn := 0
-				os := ""
-				isIPv6 := false
-				var firstSeen, lastSeen time.Time
-
-				for _, hitItem := range hitsList {
-					h, ok := hitItem.(map[string]any)
-					if !ok {
-						continue
-					}
-					src, ok := h["_source"].(map[string]any)
-					if !ok {
-						continue
-					}
-
-					if p, ok := src["port"].(float64); ok && p > 0 {
-						portsMap[int(p)] = true
-					}
-					if s, ok := src["service"].(string); ok && s != "" {
-						servicesMap[s] = true
-					}
-					if t, ok := src["title"].(string); ok && t != "" {
-						titlesMap[t] = true
-					}
-					if d, ok := src["domain"].(string); ok && d != "" {
-						domainsMap[d] = true
-					}
-					if n, ok := src["name"].(string); ok && n != "" {
-						domainsMap[n] = true
-					}
-					if reg, ok := src["registrable_domain"].(string); ok && reg != "" {
-						domainsMap[reg] = true
-					}
-					if hst, ok := src["host"].(string); ok && hst != "" && !strings.Contains(hst, ipStr) {
-						domainsMap[hst] = true
-					}
-					if o, ok := src["org"].(string); ok && o != "" {
-						org = o
-					}
-					if a, ok := src["asn"].(float64); ok && a > 0 {
-						asn = int(a)
-					}
-					if sOS, ok := src["os"].(string); ok && sOS != "" {
-						os = sOS
-					}
-					if v6, ok := src["is_ipv6"].(bool); ok && v6 {
-						isIPv6 = true
-					}
-					if fsStr, ok := src["first_seen"].(string); ok {
-						if t, err := time.Parse(time.RFC3339, fsStr); err == nil {
-							if firstSeen.IsZero() || t.Before(firstSeen) {
-								firstSeen = t
-							}
-						}
-					}
-					if lsStr, ok := src["last_seen"].(string); ok {
-						if t, err := time.Parse(time.RFC3339, lsStr); err == nil {
-							if lastSeen.IsZero() || t.After(lastSeen) {
-								lastSeen = t
-							}
-						}
-					}
+				if p, ok := src["port"].(float64); ok && p > 0 {
+					portsMap[int(p)] = true
 				}
-
-				ports := make([]int, 0, len(portsMap))
-				for p := range portsMap {
-					ports = append(ports, p)
+				if s, ok := src["service"].(string); ok && s != "" {
+					servicesMap[s] = true
 				}
-				sort.Ints(ports)
-
-				services := make([]string, 0, len(servicesMap))
-				for s := range servicesMap {
-					services = append(services, s)
+				if t, ok := src["title"].(string); ok && t != "" {
+					titlesMap[t] = true
 				}
-				sort.Strings(services)
-
-				titles := make([]string, 0, len(titlesMap))
-				for t := range titlesMap {
-					titles = append(titles, t)
+				if d, ok := src["domain"].(string); ok && d != "" {
+					domainsMap[d] = true
 				}
-				sort.Strings(titles)
-
-				domains := make([]string, 0, len(domainsMap))
-				for d := range domainsMap {
-					domains = append(domains, d)
+				if n, ok := src["name"].(string); ok && n != "" {
+					domainsMap[n] = true
 				}
-				sort.Strings(domains)
-
-				firstDom := ""
-				if len(domains) > 0 {
-					firstDom = domains[0]
+				if reg, ok := src["registrable_domain"].(string); ok && reg != "" {
+					domainsMap[reg] = true
 				}
-
-				// 单独获取主机文档，确保主机级字段（os/org/asn/geo/whois 等）
-				// 不被 top_docs 截断遗漏，并补全聚合时仅挑选的部分字段。
-				hostSrc := map[string]any{}
-				if hs, gerr := s.es.Get(ctx, "host:"+ipStr); gerr == nil {
-					hostSrc = hs
+				if hst, ok := src["host"].(string); ok && hst != "" && !strings.Contains(hst, ipStr) {
+					domainsMap[hst] = true
 				}
-				if v, ok := hostSrc["org"].(string); ok && v != "" {
-					org = v
+				if o, ok := src["org"].(string); ok && o != "" {
+					org = o
 				}
-				if v, ok := hostSrc["asn"].(float64); ok && v > 0 {
-					asn = int(v)
+				if a, ok := src["asn"].(float64); ok && a > 0 {
+					asn = int(a)
 				}
-				if v, ok := hostSrc["os"].(string); ok && v != "" {
-					os = v
+				if sOS, ok := src["os"].(string); ok && sOS != "" {
+					os = sOS
 				}
-				if v, ok := hostSrc["is_ipv6"].(bool); ok && v {
+				if v6, ok := src["is_ipv6"].(bool); ok && v6 {
 					isIPv6 = true
 				}
+				collectStrArr(src, "tech", techSet)
+				collectStrArr(src, "resolved_ips", resolvedSet)
+				collectStrArr(src, "cname", cnameSet)
 
-				// 合并结果不含 doc_type 分类标识；补全主机级字段，避免遗漏。
-				item := map[string]any{
-					"ip":                ipStr,
-					"aggregated":        true,
-					"open_ports":        ports,
-					"services":          services,
-					"titles":            titles,
-					"domains":           domains,
-					"domain":            firstDom,
-					"org":               org,
-					"asn":               asn,
-					"os":                os,
-					"is_ipv6":           isIPv6,
-					"truncated":         isTruncated,
-					"document_count":    int(docCount),
-					"aggregation_limit": store.MaxTopHitsSize,
-				}
-				// 补全其余主机级单值字段
-				for _, f := range []string{"proto", "state", "version", "banner", "server"} {
-					if v, ok := hostSrc[f].(string); ok && v != "" {
-						item[f] = v
-					}
-				}
-				// 补全对象型字段
-				for _, f := range []string{"cert", "webinfo", "geo", "whois"} {
-					if v, ok := hostSrc[f].(map[string]any); ok && len(v) > 0 {
-						item[f] = v
-					}
-				}
-				// 合并数组型字段（tech/resolved_ips/cname）取主机与各端口文档并集
-				techSet := map[string]bool{}
-				resolvedSet := map[string]bool{}
-				cnameSet := map[string]bool{}
-				collectStrArr(hostSrc, "tech", techSet)
-				collectStrArr(hostSrc, "resolved_ips", resolvedSet)
-				collectStrArr(hostSrc, "cname", cnameSet)
-				for _, hitItem := range hitsList {
-					if h, ok := hitItem.(map[string]any); ok {
-						if src, ok := h["_source"].(map[string]any); ok {
-							collectStrArr(src, "tech", techSet)
-							collectStrArr(src, "resolved_ips", resolvedSet)
-							collectStrArr(src, "cname", cnameSet)
+				if fsStr, ok := src["first_seen"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, fsStr); err == nil {
+						if firstSeen.IsZero() || t.Before(firstSeen) {
+							firstSeen = t
 						}
 					}
 				}
-				if len(techSet) > 0 {
-					item["tech"] = sortedKeys(techSet)
+				if lsStr, ok := src["last_seen"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, lsStr); err == nil {
+						if lastSeen.IsZero() || t.After(lastSeen) {
+							lastSeen = t
+						}
+					}
 				}
-				if len(resolvedSet) > 0 {
-					item["resolved_ips"] = sortedKeys(resolvedSet)
-				}
-				if len(cnameSet) > 0 {
-					item["cname"] = sortedKeys(cnameSet)
-				}
-				if !firstSeen.IsZero() {
-					item["first_seen"] = firstSeen.Format(time.RFC3339)
-				}
-				if !lastSeen.IsZero() {
-					item["last_seen"] = lastSeen.Format(time.RFC3339)
-				}
-				aggregatedItems = append(aggregatedItems, item)
 			}
 
-			afterKeyObj, hasAfter := compObj["after_key"].(map[string]any)
-			if !hasAfter || len(afterKeyObj) == 0 {
-				break
+			ports := make([]int, 0, len(portsMap))
+			for p := range portsMap {
+				ports = append(ports, p)
 			}
-			ipAfterKey = afterKeyObj
+			sort.Ints(ports)
+
+			services := make([]string, 0, len(servicesMap))
+			for s := range servicesMap {
+				services = append(services, s)
+			}
+			sort.Strings(services)
+
+			titles := make([]string, 0, len(titlesMap))
+			for t := range titlesMap {
+				titles = append(titles, t)
+			}
+			sort.Strings(titles)
+
+			domains := make([]string, 0, len(domainsMap))
+			for d := range domainsMap {
+				domains = append(domains, d)
+			}
+			sort.Strings(domains)
+
+			firstDom := ""
+			if len(domains) > 0 {
+				firstDom = domains[0]
+			}
+
+			item := map[string]any{
+				"ip":                ipStr,
+				"aggregated":        true,
+				"open_ports":        ports,
+				"services":          services,
+				"titles":            titles,
+				"domains":           domains,
+				"domain":            firstDom,
+				"org":               org,
+				"asn":               asn,
+				"os":                os,
+				"is_ipv6":           isIPv6,
+				"truncated":         isTruncated,
+				"document_count":    int(docCount),
+				"aggregation_limit": store.MaxTopHitsSize,
+			}
+			if len(techSet) > 0 {
+				item["tech"] = sortedKeys(techSet)
+			}
+			if len(resolvedSet) > 0 {
+				item["resolved_ips"] = sortedKeys(resolvedSet)
+			}
+			if len(cnameSet) > 0 {
+				item["cname"] = sortedKeys(cnameSet)
+			}
+			if !firstSeen.IsZero() {
+				item["first_seen"] = firstSeen.Format(time.RFC3339)
+			}
+			if !lastSeen.IsZero() {
+				item["last_seen"] = lastSeen.Format(time.RFC3339)
+			}
+			aggregatedItems = append(aggregatedItems, item)
 		}
-	}
 
-	// 2. 循环遍历纯域名桶
-	if !skipDomainAgg {
-		var domAfterKey map[string]any
-		for {
-			compQuery := store.BuildESCompositeQuery(root, true, domAfterKey, 1000)
-			rawResp, err := s.es.SearchAgg(ctx, compQuery)
-			if err != nil {
-				return nil, err
-			}
-			aggs, _ := rawResp["aggregations"].(map[string]any)
-			if aggs == nil {
-				break
-			}
-			compObj, _ := aggs["domain_composite"].(map[string]any)
-			if compObj == nil {
-				break
-			}
-
-			buckets, _ := compObj["buckets"].([]any)
-			for _, b := range buckets {
-				bMap, ok := b.(map[string]any)
-				if !ok {
-					continue
-				}
-				keyMap, _ := bMap["key"].(map[string]any)
-				dKey, _ := keyMap["domain"].(string)
-				if dKey == "" {
-					dKey, _ = bMap["key"].(string)
-				}
-
-				topDocs, _ := bMap["top_docs"].(map[string]any)
-				hitsObj, _ := topDocs["hits"].(map[string]any)
-				hitsList, _ := hitsObj["hits"].([]any)
-				if len(hitsList) == 0 {
-					continue
-				}
-				firstHit, _ := hitsList[0].(map[string]any)
-				src, _ := firstHit["_source"].(map[string]any)
-				if src == nil {
-					src = make(map[string]any)
-				}
-
-				dName, _ := src["name"].(string)
-				dDomain, _ := src["domain"].(string)
-				dReg, _ := src["registrable_domain"].(string)
-				if dDomain == "" {
-					dDomain = dKey
-				}
-				if dName == "" {
-					dName = dDomain
-				}
-
-				// 保留域名文档全部源字段，并规范化 domain/name。
-				item := map[string]any{}
-				for k, v := range src {
-					item[k] = v
-				}
-				item["domain"] = dDomain
-				item["name"] = dName
-				item["registrable_domain"] = dReg
-				item["aggregated"] = true
-				item["truncated"] = false
-				aggregatedItems = append(aggregatedItems, item)
-			}
-
-			afterKeyObj, hasAfter := compObj["after_key"].(map[string]any)
-			if !hasAfter || len(afterKeyObj) == 0 {
-				break
-			}
-			domAfterKey = afterKeyObj
+		afterKeyObj, hasAfter := compObj["after_key"].(map[string]any)
+		if !hasAfter || len(afterKeyObj) == 0 {
+			break
 		}
+		ipAfterKey = afterKeyObj
 	}
 
 	// 3. 100% 精确组总数计算

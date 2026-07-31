@@ -450,8 +450,8 @@ func BuildESQuery(root node, from, size int) map[string]any {
 
 const MaxTopHitsSize = 100
 
-// BuildESCompositeQuery 生成符合 ES 8.13 限制 (top_hits.size <= 100) 的 Composite Aggregation DSL
-func BuildESCompositeQuery(root node, isDomain bool, afterKey map[string]any, batchSize int) map[string]any {
+// BuildESCompositeQuery 生成符合 ES 8.13 限制 (top_hits.size <= 100) 的 IP 单路 Composite Aggregation DSL
+func BuildESCompositeQuery(root node, afterKey map[string]any, batchSize int) map[string]any {
 	must := []any{}
 	if root != nil {
 		must = append(must, root.toES())
@@ -461,64 +461,19 @@ func BuildESCompositeQuery(root node, isDomain bool, afterKey map[string]any, ba
 		batchSize = 1000
 	}
 
-	if !isDomain {
-		var queryBody map[string]any
-		if len(must) == 0 {
-			queryBody = map[string]any{"match_all": map[string]any{}}
-		} else {
-			queryBody = map[string]any{"bool": map[string]any{"must": must}}
-		}
-
-		comp := map[string]any{
-			"size": batchSize,
-			"sources": []any{
-				map[string]any{
-					"ip": map[string]any{
-						"terms": map[string]any{"field": "ip"},
-					},
-				},
-			},
-		}
-		if len(afterKey) > 0 {
-			comp["after"] = afterKey
-		}
-
-		return map[string]any{
-			"size":  0,
-			"query": queryBody,
-			"aggs": map[string]any{
-				"ip_composite": map[string]any{
-					"composite": comp,
-					"aggs": map[string]any{
-						"top_docs": map[string]any{
-							"top_hits": map[string]any{"size": MaxTopHitsSize},
-						},
-					},
-				},
-			},
-		}
-	}
-
-	queryBody := map[string]any{
-		"bool": map[string]any{
-			"must": must,
-			"must_not": []any{
-				map[string]any{"exists": map[string]any{"field": "ip"}},
-			},
-		},
+	var queryBody map[string]any
+	if len(must) == 0 {
+		queryBody = map[string]any{"match_all": map[string]any{}}
+	} else {
+		queryBody = map[string]any{"bool": map[string]any{"must": must}}
 	}
 
 	comp := map[string]any{
 		"size": batchSize,
 		"sources": []any{
 			map[string]any{
-				"domain": map[string]any{
-					"terms": map[string]any{
-						"script": map[string]any{
-							"source": "doc.containsKey('domain') && !doc['domain'].empty ? doc['domain'].value : (doc.containsKey('name') && !doc['name'].empty ? doc['name'].value : (doc.containsKey('registrable_domain') && !doc['registrable_domain'].empty ? doc['registrable_domain'].value : ''))",
-							"lang":   "painless",
-						},
-					},
+				"ip": map[string]any{
+					"terms": map[string]any{"field": "ip"},
 				},
 			},
 		},
@@ -531,11 +486,11 @@ func BuildESCompositeQuery(root node, isDomain bool, afterKey map[string]any, ba
 		"size":  0,
 		"query": queryBody,
 		"aggs": map[string]any{
-			"domain_composite": map[string]any{
+			"ip_composite": map[string]any{
 				"composite": comp,
 				"aggs": map[string]any{
 					"top_docs": map[string]any{
-						"top_hits": map[string]any{"size": 10},
+						"top_hits": map[string]any{"size": MaxTopHitsSize},
 					},
 				},
 			},

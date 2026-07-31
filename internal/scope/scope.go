@@ -2,8 +2,10 @@ package scope
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"strings"
+	"time"
 )
 
 // maxExpand 单次 CIDR 展开上限，避免超大网段撑爆任务表
@@ -34,7 +36,22 @@ func Expand(scope map[string]any) ([]string, error) {
 			}
 		}
 	}
-	return out, nil
+	return ShuffleIPs(out), nil
+}
+
+// ShuffleIPs 对目标列表进行 Fisher-Yates 随机打散，交错发包网段
+func ShuffleIPs(ips []string) []string {
+	if len(ips) <= 1 {
+		return ips
+	}
+	out := make([]string, len(ips))
+	copy(out, ips)
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for i := len(out) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 func expandOne(s string) []string {

@@ -46,4 +46,6 @@ export const api = {
   listTemplates: () => request('GET', '/api/templates'),
   addTemplate: (content) => request('POST', '/api/templates', { content }),
   deleteTask: (id) => request('DELETE', '/api/tasks/' + encodeURIComponent(id)),
+  getAuditLogs: (q = '', page = 1, pageSize = 20) =>
+    request('GET', '/api/audit/logs?q=' + encodeURIComponent(q || '') + '&page=' + page + '&page_size=' + pageSize),
 }

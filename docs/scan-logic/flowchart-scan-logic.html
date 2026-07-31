@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas 扫描流程图</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Geist', sans-serif; background: #faf6f0; min-height: 100vh; padding: 2.5rem 2rem; color: #1c1917; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.6875rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #78716c; margin-bottom: 0.375rem; }
+    h1 { font-family: 'Instrument Serif', serif; font-size: 1.75rem; font-weight: 400; color: #1c1917; }
+    .subtitle { color: #78716c; font-size: 0.8125rem; margin-top: 0.375rem; }
+    .diagram-desc { color: #a8a29e; font-size: 0.6875rem; margin-top: 0.5rem; line-height: 1.5; font-style: italic; }
+    .diagram-container { background: #f0ebe3; border: 1px solid rgba(28,25,23,0.12); border-radius: 8px; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 880px; display: block; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .card { background: #ffffff; border: 1px solid rgba(28,25,23,0.12); border-radius: 6px; padding: 1.25rem; }
+    .card-eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #a8a29e; margin-bottom: 0.5rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .card-dot.ink { background: #1c1917; }
+    .card-dot.accent { background: #d97706; }
+    .card-dot.muted { background: #78716c; }
+    .card h3 { font-size: 0.8125rem; font-weight: 600; color: #1c1917; }
+    .card ul { list-style: none; color: #78716c; font-size: 0.75rem; line-height: 1.6; }
+    .card li { margin-bottom: 0.25rem; }
+    .footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(28,25,23,0.08); text-align: center; font-family: 'Geist Mono', monospace; color: #a8a29e; font-size: 0.625rem; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <p class="eyebrow">Flowchart</p>
+      <h1>域名 / 主机 / IP 扫描流程</h1>
+      <p class="subtitle">Process() 分派 → scanHost(IPv6/raw/connect) 或 scanDomain(HTTP 探测) → 汇总落库</p>
+      <p class="diagram-desc"><b>流程图 (Flowchart)</b> — 行为性图形。展示业务逻辑或算法流程，侧重于动作和决策分支。</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 980 900">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#78716c"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#d97706"/></marker>
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(28,25,23,0.10)"/></pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#faf6f0"/>
+        <rect width="100%" height="100%" fill="url(#dots)" opacity="0.6"/>
+
+        <!-- ARROWS (behind boxes) -->
+        <line x1="290" y1="64" x2="290" y2="80" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="290" y1="128" x2="290" y2="136" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="290" y1="200" x2="290" y2="216" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="262" y="204" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="282" y="215" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">是</text>
+
+        <line x1="350" y1="168" x2="620" y2="242" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="470" y="186" width="72" height="14" rx="2" fill="#faf6f0"/>
+        <text x="506" y="197" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">否 (域名)</text>
+
+        <line x1="290" y1="264" x2="290" y2="272" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="290" y1="336" x2="290" y2="360" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="262" y="340" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="282" y="351" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">否</text>
+
+        <!-- IPv6? 是 → connect降级 -->
+        <line x1="350" y1="304" x2="400" y2="384" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="356" y="332" width="28" height="14" rx="2" fill="#faf6f0"/>
+        <text x="370" y="343" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">是</text>
+
+        <!-- raw模式? 是 → raw批量 -->
+        <line x1="350" y1="392" x2="400" y2="484" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="356" y="428" width="28" height="14" rx="2" fill="#faf6f0"/>
+        <text x="370" y="439" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">是</text>
+
+        <!-- raw模式? 否 → connect逐端口 -->
+        <path d="M290,424 L290,584 L400,584" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="296" y="500" width="28" height="14" rx="2" fill="#faf6f0"/>
+        <text x="310" y="511" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">否</text>
+
+        <!-- connect降级 → 落库端口 (merge) -->
+        <path d="M500,408 L500,688 L390,688" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="430" y="540" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="450" y="551" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">落库</text>
+
+        <!-- raw批量 → 落库端口 -->
+        <path d="M500,508 L500,688 L390,688" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <!-- connect逐端口 → 落库端口 -->
+        <path d="M500,608 L500,688 L390,688" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <line x1="290" y1="712" x2="290" y2="728" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="290" y1="776" x2="290" y2="812" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- domain branch -->
+        <line x1="720" y1="268" x2="720" y2="284" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="720" y1="336" x2="720" y2="352" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <path d="M720,404 L720,832 L370,832" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- BOXES -->
+        <!-- Start -->
+        <rect x="210" y="24" width="160" height="40" rx="20" fill="#faf6f0" stroke="#78716c" stroke-width="1"/>
+        <text x="290" y="49" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Process(target, ports)</text>
+
+        <!-- 解析端口规格 -->
+        <rect x="190" y="80" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="198" y="86" width="56" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="226" y="95" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PARSE</text>
+        <text x="290" y="118" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">解析端口规格</text>
+
+        <!-- 是IP? diamond -->
+        <polygon points="290,136 350,168 290,200 230,168" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="290" y="172" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">是 IP?</text>
+
+        <!-- scanHost -->
+        <rect x="190" y="216" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="198" y="222" width="48" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="222" y="231" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HOST</text>
+        <text x="290" y="250" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">scanHost(ip, ports)</text>
+
+        <!-- IPv6? diamond -->
+        <polygon points="290,272 350,304 290,336 230,304" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="290" y="308" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">IPv6?</text>
+
+        <!-- raw模式? diamond -->
+        <polygon points="290,360 350,392 290,424 230,392" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="290" y="396" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">raw 模式?</text>
+
+        <!-- connect降级 (IPv6 path) -->
+        <rect x="400" y="360" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="408" y="366" width="64" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="440" y="375" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">IPV6</text>
+        <text x="500" y="388" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">connect 降级</text>
+        <text x="500" y="400" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">raw 不支持 IPv6</text>
+
+        <!-- raw批量 -->
+        <rect x="400" y="460" width="200" height="48" rx="6" fill="#faf6f0"/>
+        <rect x="400" y="460" width="200" height="48" rx="6" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1.2"/>
+        <rect x="408" y="466" width="48" height="12" rx="2" fill="transparent" stroke="rgba(217,119,6,0.40)" stroke-width="0.8"/>
+        <text x="432" y="475" fill="rgba(217,119,6,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RAW</text>
+        <text x="500" y="488" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">raw 批量扫描</text>
+        <text x="500" y="500" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">SYN/ACK 整块抓包</text>
+
+        <!-- connect逐端口 -->
+        <rect x="400" y="560" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="408" y="566" width="72" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="444" y="575" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONNECT</text>
+        <text x="500" y="592" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">connect 逐端口</text>
+        <text x="500" y="604" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">goroutine + banner</text>
+
+        <!-- 落库端口 -->
+        <rect x="190" y="664" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="198" y="670" width="60" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="228" y="679" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PERSIST</text>
+        <text x="290" y="696" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">persistResult</text>
+        <text x="290" y="708" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shouldPersist 策略</text>
+
+        <!-- 汇总IP -->
+        <rect x="190" y="728" width="200" height="48" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="198" y="734" width="52" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="224" y="743" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FINISH</text>
+        <text x="290" y="760" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">finishHost</text>
+        <text x="290" y="772" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">upsert 主机资产</text>
+
+        <!-- End -->
+        <rect x="210" y="812" width="160" height="40" rx="20" fill="#faf6f0" stroke="#78716c" stroke-width="1"/>
+        <text x="290" y="837" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">扫描完成</text>
+
+        <!-- domain column -->
+        <rect x="620" y="216" width="200" height="52" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="628" y="222" width="64" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="660" y="231" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">DOMAIN</text>
+        <text x="720" y="250" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">scanDomain(domain)</text>
+
+        <rect x="620" y="284" width="200" height="52" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="628" y="290" width="48" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="652" y="299" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HTTP</text>
+        <text x="720" y="318" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">httpProbe 探测</text>
+
+        <rect x="620" y="352" width="200" height="52" rx="6" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <rect x="628" y="358" width="60" height="12" rx="2" fill="transparent" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="658" y="367" fill="rgba(28,25,23,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UPSERT</text>
+        <text x="720" y="380" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">落库域名 + 端口</text>
+        <text x="720" y="392" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">端口缺 State 字段</text>
+
+        <!-- notes -->
+        <rect x="20" y="664" width="150" height="92" rx="6" fill="rgba(28,25,23,0.02)" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="30" y="684" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">shouldPersist:</text>
+        <text x="30" y="700" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">open 始终落库</text>
+        <text x="30" y="716" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">filtered → RecordFiltered</text>
+        <text x="30" y="732" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">closed/timeout →</text>
+        <text x="30" y="748" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">RecordClosed</text>
+
+        <rect x="840" y="352" width="140" height="92" rx="6" fill="rgba(192,86,33,0.03)" stroke="rgba(192,86,33,0.30)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="850" y="372" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace">待修复 (gap):</text>
+        <text x="850" y="388" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace">scanDomain 的端口</text>
+        <text x="850" y="404" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace">Asset 未写 State，</text>
+        <text x="850" y="420" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace">主列表徽标缺状态</text>
+
+        <!-- LEGEND -->
+        <line x1="30" y1="850" x2="950" y2="850" stroke="rgba(28,25,23,0.10)" stroke-width="0.8"/>
+        <text x="30" y="874" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+        <rect x="100" y="862" width="24" height="14" rx="7" fill="#faf6f0" stroke="#78716c" stroke-width="1"/>
+        <text x="132" y="873" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">开始/结束</text>
+        <rect x="220" y="862" width="24" height="14" rx="4" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="252" y="873" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">步骤</text>
+        <polygon points="332,862 344,869 332,876 320,869" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="354" y="873" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">判断</text>
+        <rect x="416" y="862" width="24" height="14" rx="4" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1"/>
+        <text x="448" y="873" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">关键路径</text>
+        <rect x="540" y="862" width="24" height="14" rx="4" fill="rgba(28,25,23,0.02)" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="572" y="873" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">注释/待修复</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="card-eyebrow">HOST PATH</p>
+        <div class="card-header"><div class="card-dot ink"></div><h3>scanHost 三分支</h3></div>
+        <ul>
+          <li>• IPv6 → connect 降级（raw 不支持）</li>
+          <li>• IPv4 raw 模式 → SYN/ACK 整块抓包，失败回退 connect</li>
+          <li>• connect 模式 → 逐端口 goroutine + banner + httpEnrich</li>
+          <li>• 全程 panic recover，单目标不拖垮 worker</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="card-eyebrow">DOMAIN PATH</p>
+        <div class="card-header"><div class="card-dot accent"></div><h3>scanDomain</h3></div>
+        <ul>
+          <li>• 仅探测 commonHTTPPorts 上的 HTTP(S)</li>
+          <li>• httpProbe + fingerprint 回填标题/技术栈</li>
+          <li>• 落库域名资产与端口资产</li>
+          <li>• 已知 gap：端口 Asset 未写 State（待补）</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">atlas · 域名 / 主机 / IP 扫描流程</div>
+  </div>
+</body>
+</html>

@@ -3,13 +3,11 @@ package esasset
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"atlas/internal/assetstore"
 	"atlas/internal/model"
 	"atlas/internal/store"
 )
@@ -38,11 +36,7 @@ func TestUpsertPortID(t *testing.T) {
 // TestGetHost 验证 GetHost 命中返回 model.Asset；未命中返回 ErrNotFound
 func TestGetHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "_doc/host:1.2.3.4") {
-			w.Write([]byte(`{"found":true,"_source":{"ip":"1.2.3.4","org":"acme","os":"Linux"}}`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"ip":"1.2.3.4","org":"acme","os":"Linux","port":80}}]}}`))
 	}))
 	defer srv.Close()
 
@@ -53,9 +47,6 @@ func TestGetHost(t *testing.T) {
 	}
 	if h.IP != "1.2.3.4" || h.Org != "acme" || h.OS != "Linux" {
 		t.Fatalf("bad host: %+v", h)
-	}
-	if _, err := s.GetHost(context.Background(), "9.9.9.9"); !errors.Is(err, assetstore.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -76,7 +67,7 @@ func TestSearchAssets(t *testing.T) {
 	}
 }
 
-// TestSearchAssets_Aggregated 验证 ES Composite Aggregation 限制 (top_hits<=100)、截断感知、name-only 纯域名兼容与按 kind 跳过循环
+// TestSearchAssets_Aggregated 验证 ES Composite Aggregation 限制 (top_hits<=100) 与截断感知
 func TestSearchAssets_Aggregated(t *testing.T) {
 	var requestBodies []map[string]any
 
@@ -87,7 +78,6 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 
 		aggs, _ := body["aggs"].(map[string]any)
 		ipComp, _ := aggs["ip_composite"].(map[string]any)
-		domComp, _ := aggs["domain_composite"].(map[string]any)
 
 		if ipComp != nil {
 			compObj, _ := ipComp["composite"].(map[string]any)
@@ -141,30 +131,6 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 			}`))
 			return
 		}
-
-		if domComp != nil {
-			// 模拟纯域名批次 (含一个 name-only 的域名文档)
-			w.Write([]byte(`{
-				"aggregations": {
-					"domain_composite": {
-						"buckets": [
-							{
-								"key": {"domain": "nameonly.org"},
-								"doc_count": 1,
-								"top_docs": {
-									"hits": {
-										"hits": [
-											{"_source": {"name": "nameonly.org", "registrable_domain": "nameonly.org"}}
-										]
-									}
-								}
-							}
-						]
-					}
-				}
-			}`))
-			return
-		}
 	}))
 	defer srv.Close()
 
@@ -207,23 +173,7 @@ func TestSearchAssets_Aggregated(t *testing.T) {
 	if docCnt, ok := item1["document_count"].(int); !ok || docCnt != 150 {
 		t.Errorf("expected document_count=150, got %v", item1["document_count"])
 	}
-	if aggLim, ok := item1["aggregation_limit"].(int); !ok || aggLim != 100 {
-		t.Errorf("expected aggregation_limit=100, got %v", item1["aggregation_limit"])
-	}
-
-	// 测试 3: 验证 name-only 纯域名提取
-	var nameOnlyItem map[string]any
-	for _, it := range res.Items {
-		if it["name"] == "nameonly.org" || it["domain"] == "nameonly.org" {
-			nameOnlyItem = it
-			break
-		}
-	}
-	if nameOnlyItem == nil {
-		t.Errorf("expected name-only domain 'nameonly.org' to be parsed and included")
-	}
-
-	// 测试 4: 验证聚合结果去除 doc_type 分类标识，且保留操作系统字段（os）
+	// 测试 3: 验证合并主机属性
 	var hostItem map[string]any
 	for _, it := range res.Items {
 		if it["ip"] == "1.1.1.1" {

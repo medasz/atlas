@@ -16,17 +16,23 @@ import (
 	"atlas/internal/ratelimit"
 	"atlas/internal/scan/tcpscan"
 	"atlas/internal/assetstore"
+	"atlas/internal/store"
 	"golang.org/x/net/publicsuffix"
 )
 
 // Scanner 资产探测引擎，实现 task.Processor
 type Scanner struct {
 	asset        assetstore.AssetStore
+	pg           *store.Store
 	rate         *ratelimit.Limiter
 	fp           *fingerprint.Service
 	defaultPorts []int
 	timeout      time.Duration
 	connSem      int
+
+	enrichChan chan openPortEvent
+	writerChan chan model.Asset
+	cancel     context.CancelFunc
 
 	// scanCfg 为运行时可热更新的扫描配置（模式/网卡/raw 参数）。
 	// 通过 SetScanConfig 由配置 API 推送更新，scanHost 执行时实时读取，
@@ -41,15 +47,29 @@ func New(asset assetstore.AssetStore, r *ratelimit.Limiter, defaultPorts []int, 
 	if len(defaultPorts) == 0 {
 		defaultPorts = TopPorts
 	}
-	return &Scanner{
-		asset:   asset,
-		rate:    r,
-		fp:      fp,
+	sc := &Scanner{
+		asset:        asset,
+		rate:         r,
+		fp:           fp,
 		defaultPorts: defaultPorts,
-		timeout: 1500 * time.Millisecond,
-		connSem: 50,
-		scanCfg: scanCfg,
+		timeout:      1500 * time.Millisecond,
+		connSem:      200,
+		scanCfg:      scanCfg,
 	}
+	sc.startPipeline(context.Background())
+	return sc
+}
+
+// Close 优雅关闭扫描器后台流水线，通知 Worker 退出并刷盘
+func (sc *Scanner) Close() {
+	if sc.cancel != nil {
+		sc.cancel()
+	}
+}
+
+// SetStore 注入 PostgreSQL 存储（用于持久化主机存活与生命周期数据，不污染 ES 资产库）。
+func (sc *Scanner) SetStore(st *store.Store) {
+	sc.pg = st
 }
 
 // SetScanConfig 运行时热更新扫描配置：界面改模式/网卡后无需重启即对新建任务生效。
@@ -65,6 +85,7 @@ func (sc *Scanner) liveScanCfg() config.ScanConfig {
 	defer sc.mu.RUnlock()
 	return sc.scanCfg
 }
+
 
 // Process 实现 task.Processor：根据目标类型分派
 func (sc *Scanner) Process(ctx context.Context, task model.Task, target, ports string) (map[string]any, error) {
@@ -199,19 +220,23 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 			banner := grabBanner(conn, sc.timeout)
 			_ = conn.Close()
 
-		portAsset := model.Asset{
-			IP:      ip,
-			Port:    p,
-			Proto:   "tcp",
-			State:   string(tcpscan.Open),
-			Service: guessService(p, banner),
-			Banner:  banner,
-			Host:    ip,
-			IsIPv6:  isV6,
-			LastSeen: time.Now(),
-		}
-			sc.httpEnrich(ip, p, banner, &portAsset)
-			sc.upsert(ctx, portAsset)
+			if sc.enrichChan != nil {
+				sc.enrichChan <- openPortEvent{IP: ip, Port: p, Banner: banner, IsV6: isV6}
+			} else {
+				portAsset := model.Asset{
+					IP:       ip,
+					Port:     p,
+					Proto:    "tcp",
+					State:    string(tcpscan.Open),
+					Service:  guessService(p, banner),
+					Banner:   banner,
+					Host:     ip,
+					IsIPv6:   isV6,
+					LastSeen: time.Now(),
+				}
+				sc.httpEnrich(ip, p, banner, &portAsset)
+				sc.upsert(ctx, portAsset)
+			}
 
 			mu.Lock()
 			openPorts = append(openPorts, p)
@@ -222,19 +247,16 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 	return sc.finishHost(ctx, ip, isV6, openPorts)
 }
 
-// finishHost 落库主机资产并返回扫描结果摘要。
+// finishHost 将主机在线打卡与生命周期落库至 PostgreSQL（不再向 ES 写入 port:<ip>:0 垃圾数据）并返回扫描结果摘要。
 func (sc *Scanner) finishHost(ctx context.Context, ip string, isV6 bool, openPorts []int) (map[string]any, error) {
-	if err := sc.asset.Upsert(ctx, model.Asset{
-		IP:        ip,
-		IsIPv6:    isV6,
-		OpenPorts: len(openPorts),
-		FirstSeen: time.Now(),
-		LastSeen:  time.Now(),
-	}); err != nil {
-		return nil, err
+	if sc.pg != nil {
+		if err := sc.pg.UpsertIPLifecycle(ctx, ip, isV6, len(openPorts)); err != nil {
+			log.Printf("scan: upsert ip lifecycle %s to pg failed: %v", ip, err)
+		}
 	}
 	return map[string]any{"ip": ip, "open_ports": openPorts, "count": len(openPorts)}, nil
 }
+
 
 // shouldPersist 依据配置决定某端口状态是否落库：
 //   - open 始终落库（确认的开放端口）；
@@ -271,9 +293,15 @@ func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpsca
 		LastSeen:  time.Now(),
 	}
 	if r.State == tcpscan.Open {
-		sc.httpEnrich(ip, p, r.Banner, &portAsset)
+		if sc.enrichChan != nil {
+			sc.enrichChan <- openPortEvent{IP: ip, Port: p, Banner: r.Banner, IsV6: isV6}
+		} else {
+			sc.httpEnrich(ip, p, r.Banner, &portAsset)
+			sc.upsert(ctx, portAsset)
+		}
+	} else {
+		sc.upsert(ctx, portAsset)
 	}
-	sc.upsert(ctx, portAsset)
 
 	mu.Lock()
 	if r.State == tcpscan.Open {

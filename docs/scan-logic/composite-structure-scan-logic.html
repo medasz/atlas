@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas 扫描复合结构图</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Geist', sans-serif; background: #faf6f0; min-height: 100vh; padding: 2.5rem 2rem; color: #1c1917; }
+    .container { max-width: 1080px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.6875rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #78716c; margin-bottom: 0.375rem; }
+    h1 { font-family: 'Instrument Serif', serif; font-size: 1.75rem; font-weight: 400; color: #1c1917; }
+    .subtitle { color: #78716c; font-size: 0.8125rem; margin-top: 0.375rem; }
+    .diagram-desc { color: #a8a29e; font-size: 0.6875rem; margin-top: 0.5rem; line-height: 1.5; font-style: italic; }
+    .diagram-container { background: #f0ebe3; border: 1px solid rgba(28,25,23,0.12); border-radius: 8px; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 880px; display: block; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .card { background: #ffffff; border: 1px solid rgba(28,25,23,0.12); border-radius: 6px; padding: 1.25rem; }
+    .card-eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #a8a29e; margin-bottom: 0.5rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .card-dot.ink { background: #1c1917; }
+    .card-dot.accent { background: #d97706; }
+    .card-dot.muted { background: #78716c; }
+    .card h3 { font-size: 0.8125rem; font-weight: 600; color: #1c1917; }
+    .card ul { list-style: none; color: #78716c; font-size: 0.75rem; line-height: 1.6; }
+    .card li { margin-bottom: 0.25rem; }
+    .footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(28,25,23,0.08); text-align: center; font-family: 'Geist Mono', monospace; color: #a8a29e; font-size: 0.625rem; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <p class="eyebrow">Composite Structure Diagram</p>
+      <h1>Scanner 内部复合结构</h1>
+      <p class="subtitle">Scanner 作为协作器，聚合 5 个 part（tcpscan / ratelimit / httpProbe / fingerprint / AssetStore）并通过连接器协作</p>
+      <p class="diagram-desc"><b>复合结构图 (Composite Structure Diagram)</b> — 结构性图形。展示分类器（如类/组件）的内部结构：部件(part)、端口(port)与连接器(connector)。</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 980 620">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#78716c"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#d97706"/></marker>
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(28,25,23,0.10)"/></pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#faf6f0"/>
+        <rect width="100%" height="100%" fill="url(#dots)" opacity="0.6"/>
+
+        <!-- ARROWS (behind boxes) -->
+        <!-- p_tcpscan → p_store -->
+        <line x1="320" y1="180" x2="680" y2="270" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="476" y="206" width="80" height="14" rx="2" fill="#faf6f0"/>
+        <text x="516" y="217" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">open → upsert</text>
+
+        <!-- p_http → p_fp -->
+        <line x1="320" y1="340" x2="400" y2="340" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="332" y="324" width="96" height="14" rx="2" fill="#faf6f0"/>
+        <text x="380" y="335" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">enrich → detect</text>
+
+        <!-- p_tcpscan → p_http -->
+        <line x1="220" y1="220" x2="220" y2="300" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="160" y="252" width="44" height="14" rx="2" fill="#faf6f0"/>
+        <text x="182" y="263" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">open</text>
+
+        <!-- p_rate → p_tcpscan -->
+        <line x1="400" y1="180" x2="320" y2="180" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="332" y="164" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="352" y="175" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">limit</text>
+
+        <!-- p_rate → p_http (routed below p_fp) -->
+        <path d="M500,220 L500,410 L220,410 L220,380" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="360" y="394" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="380" y="405" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">limit</text>
+
+        <!-- p_fp → p_store -->
+        <line x1="600" y1="340" x2="680" y2="270" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="612" y="288" width="76" height="14" rx="2" fill="#faf6f0"/>
+        <text x="650" y="299" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">webinfo</text>
+
+        <!-- Target → boundary -->
+        <line x1="200" y1="52" x2="200" y2="60" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="150" y="36" width="76" height="14" rx="2" fill="#faf6f0"/>
+        <text x="188" y="47" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">target, ports</text>
+
+        <!-- ScanConfig → boundary -->
+        <line x1="780" y1="52" x2="780" y2="60" stroke="#d97706" stroke-width="1.1" marker-end="url(#arrow-accent)"/>
+        <rect x="716" y="36" width="104" height="14" rx="2" fill="#faf6f0"/>
+        <text x="768" y="47" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">config (hot reload)</text>
+
+        <!-- p_store → Elasticsearch -->
+        <line x1="770" y1="320" x2="770" y2="560" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="700" y="430" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="720" y="441" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">读写</text>
+
+        <!-- BOXES -->
+        <!-- boundary -->
+        <rect x="40" y="60" width="900" height="480" rx="12" fill="#fdfcfb" stroke="#5B8A72" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="56" y="80" fill="#5B8A72" font-size="11" font-weight="600" font-family="'Geist', sans-serif">Scanner</text>
+        <text x="130" y="80" fill="#78716c" font-size="9" font-family="'Geist Mono', monospace">: task.Processor</text>
+
+        <!-- p_tcpscan -->
+        <rect x="120" y="140" width="200" height="80" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="132" y="162" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace">p_tcpscan</text>
+        <text x="220" y="190" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">tcpscan.Engine</text>
+        <text x="220" y="206" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">raw / connect 探测</text>
+
+        <!-- p_rate -->
+        <rect x="400" y="140" width="200" height="80" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="412" y="162" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace">p_rate</text>
+        <text x="500" y="190" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ratelimit.Limiter</text>
+        <text x="500" y="206" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">全局 / 目标限速</text>
+
+        <!-- p_http -->
+        <rect x="120" y="300" width="200" height="80" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="132" y="322" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace">p_http</text>
+        <text x="220" y="350" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">httpProbe</text>
+        <text x="220" y="366" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">HTTP(S) 探测</text>
+
+        <!-- p_fp -->
+        <rect x="400" y="300" width="200" height="80" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="412" y="322" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace">p_fp</text>
+        <text x="500" y="350" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">fingerprint.Service</text>
+        <text x="500" y="366" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">技术栈识别</text>
+
+        <!-- p_store -->
+        <rect x="680" y="220" width="180" height="100" rx="6" fill="rgba(28,25,23,0.05)" stroke="#78716c" stroke-width="1"/>
+        <text x="692" y="242" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace">p_store</text>
+        <text x="770" y="270" fill="#1c1917" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">AssetStore</text>
+        <text x="770" y="286" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">Upsert / Search</text>
+        <text x="770" y="302" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">(ES 实现)</text>
+
+        <!-- port circles on part edges -->
+        <circle cx="320" cy="180" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="220" cy="220" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="400" cy="180" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="320" cy="340" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="600" cy="340" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="680" cy="270" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <circle cx="770" cy="320" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+
+        <!-- EXTERNALS -->
+        <!-- Target -->
+        <rect x="120" y="12" width="160" height="40" rx="6" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="200" y="36" fill="#78716c" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">目标 IP / 域名</text>
+        <!-- ScanConfig -->
+        <rect x="700" y="12" width="160" height="40" rx="6" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1"/>
+        <text x="780" y="36" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ScanConfig</text>
+        <!-- Elasticsearch -->
+        <rect x="700" y="560" width="160" height="40" rx="6" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" stroke-width="0.8"/>
+        <text x="780" y="584" fill="#78716c" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Elasticsearch</text>
+
+        <!-- Process() provided interface on boundary -->
+        <circle cx="490" cy="60" r="4" fill="#5B8A72" stroke="#5B8A72" stroke-width="0.8"/>
+        <text x="490" y="52" fill="#5B8A72" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">Process()</text>
+
+        <!-- note -->
+        <rect x="500" y="430" width="240" height="84" rx="6" fill="rgba(28,25,23,0.02)" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="512" y="450" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">协作说明:</text>
+        <text x="512" y="466" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• raw 抓包失败 → 自动降级 connect</text>
+        <text x="512" y="482" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• 逐端口 goroutine + panic recover</text>
+        <text x="512" y="498" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• 单端口写入失败仅记日志不中断</text>
+
+        <!-- LEGEND -->
+        <line x1="30" y1="540" x2="950" y2="540" stroke="rgba(28,25,23,0.10)" stroke-width="0.8"/>
+        <text x="30" y="564" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+        <rect x="100" y="552" width="24" height="14" rx="4" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="132" y="563" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">part 部件</text>
+        <rect x="200" y="552" width="24" height="14" rx="4" fill="rgba(28,25,23,0.05)" stroke="#78716c" stroke-width="1"/>
+        <text x="232" y="563" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">Store</text>
+        <rect x="300" y="552" width="24" height="14" rx="4" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1"/>
+        <text x="332" y="563" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">配置</text>
+        <rect x="392" y="552" width="24" height="14" rx="6" fill="#fdfcfb" stroke="#5B8A72" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="424" y="563" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">协作器边界</text>
+        <circle cx="540" cy="559" r="4" fill="#78716c" stroke="#78716c" stroke-width="0.8"/>
+        <text x="552" y="563" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">端口/接口</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="card-eyebrow">PARTS</p>
+        <div class="card-header"><div class="card-dot ink"></div><h3>5 个部件</h3></div>
+        <ul>
+          <li>• p_tcpscan — TCP 探测引擎</li>
+          <li>• p_rate — 限速器</li>
+          <li>• p_http — HTTP 探测</li>
+          <li>• p_fp — 技术栈指纹</li>
+          <li>• p_store — 资产存储接口</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="card-eyebrow">CONNECTORS</p>
+        <div class="card-header"><div class="card-dot accent"></div><h3>协作流</h3></div>
+        <ul>
+          <li>• tcpscan 开放端口 → httpProbe 探测 → fingerprint 识别</li>
+          <li>• 探测结果与 webinfo 经 p_store 落库</li>
+          <li>• ratelimit 在 TCP 与 HTTP 两条路径限流</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">atlas · Scanner 内部复合结构</div>
+  </div>
+</body>
+</html>

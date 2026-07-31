@@ -6,6 +6,7 @@ import Tasks from './views/Tasks.vue'
 import Blacklist from './views/Blacklist.vue'
 import Settings from './views/Settings.vue'
 import Vulns from './views/Vulns.vue'
+import Audit from './views/Audit.vue'
 
 const routes = [
   { path: '/login', component: Login },
@@ -18,6 +19,7 @@ const routes = [
       { path: 'tasks', component: Tasks },
       { path: 'vulns', component: Vulns },
       { path: 'blacklist', component: Blacklist },
+      { path: 'audit', component: Audit },
       { path: 'settings', component: Settings }
     ]
   }

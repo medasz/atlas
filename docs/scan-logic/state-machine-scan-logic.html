@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas 端口状态机图</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Geist', sans-serif; background: #faf6f0; min-height: 100vh; padding: 2.5rem 2rem; color: #1c1917; }
+    .container { max-width: 920px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.6875rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #78716c; margin-bottom: 0.375rem; }
+    h1 { font-family: 'Instrument Serif', serif; font-size: 1.75rem; font-weight: 400; color: #1c1917; }
+    .subtitle { color: #78716c; font-size: 0.8125rem; margin-top: 0.375rem; }
+    .diagram-desc { color: #a8a29e; font-size: 0.6875rem; margin-top: 0.5rem; line-height: 1.5; font-style: italic; }
+    .diagram-container { background: #f0ebe3; border: 1px solid rgba(28,25,23,0.12); border-radius: 8px; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 720px; display: block; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .card { background: #ffffff; border: 1px solid rgba(28,25,23,0.12); border-radius: 6px; padding: 1.25rem; }
+    .card-eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #a8a29e; margin-bottom: 0.5rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .card-dot.ink { background: #1c1917; }
+    .card-dot.accent { background: #d97706; }
+    .card-dot.muted { background: #78716c; }
+    .card h3 { font-size: 0.8125rem; font-weight: 600; color: #1c1917; }
+    .card ul { list-style: none; color: #78716c; font-size: 0.75rem; line-height: 1.6; }
+    .card li { margin-bottom: 0.25rem; }
+    .footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(28,25,23,0.08); text-align: center; font-family: 'Geist Mono', monospace; color: #a8a29e; font-size: 0.625rem; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <p class="eyebrow">State Machine Diagram</p>
+      <h1>端口探测状态机</h1>
+      <p class="subtitle">单端口从「未知」经 TCP/HTTP 探测进入 open / closed / filtered 等终态，按 shouldPersist 落库</p>
+      <p class="diagram-desc"><b>状态机图 (State Machine Diagram)</b> — 行为性图形。描述对象状态随事件迁移的规则。</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 760 580">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#78716c"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#d97706"/></marker>
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(28,25,23,0.10)"/></pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#faf6f0"/>
+        <rect width="100%" height="100%" fill="url(#dots)" opacity="0.6"/>
+
+        <!-- ARROWS (behind boxes) -->
+        <!-- initial → Unknown -->
+        <line x1="60" y1="138" x2="70" y2="138" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- Unknown → Open -->
+        <line x1="220" y1="138" x2="300" y2="138" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="224" y="122" width="88" height="14" rx="2" fill="#faf6f0"/>
+        <text x="268" y="133" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">tcpConnect 成功</text>
+
+        <!-- Unknown → Closed -->
+        <path d="M145,161 C145,210 300,210 300,253" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="190" y="196" width="84" height="14" rx="2" fill="#faf6f0"/>
+        <text x="232" y="207" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">RST / 拒绝</text>
+
+        <!-- Unknown → Filtered -->
+        <path d="M145,161 C145,300 300,300 300,368" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="186" y="286" width="92" height="14" rx="2" fill="#faf6f0"/>
+        <text x="232" y="297" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">无响应 / ICMP</text>
+
+        <!-- Unknown → Open|Filtered -->
+        <path d="M145,161 C145,210 520,210 520,253" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="320" y="196" width="72" height="14" rx="2" fill="#faf6f0"/>
+        <text x="356" y="207" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">部分响应</text>
+
+        <!-- Unknown → Unfiltered -->
+        <path d="M145,161 C145,300 520,300 520,368" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="320" y="286" width="104" height="14" rx="2" fill="#faf6f0"/>
+        <text x="372" y="297" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">可达无应用层</text>
+
+        <!-- Unknown → Timeout -->
+        <path d="M145,161 C145,420 520,420 520,483" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="320" y="406" width="40" height="14" rx="2" fill="#faf6f0"/>
+        <text x="340" y="417" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">超时</text>
+
+        <!-- Open → Persisted -->
+        <path d="M460,138 L600,138 L600,483 L460,483" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="500" y="290" width="88" height="14" rx="2" fill="#faf6f0"/>
+        <text x="544" y="301" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shouldPersist: 始终</text>
+
+        <!-- Closed → Persisted (gated) -->
+        <path d="M300,253 L260,253 L260,483 L300,483" fill="none" stroke="#a8a29e" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+        <rect x="208" y="350" width="92" height="14" rx="2" fill="#faf6f0"/>
+        <text x="254" y="361" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">RecordClosed?</text>
+
+        <!-- Filtered → Persisted (gated) -->
+        <path d="M300,368 L260,368 L260,483 L300,483" fill="none" stroke="#a8a29e" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+        <rect x="200" y="408" width="100" height="14" rx="2" fill="#faf6f0"/>
+        <text x="250" y="419" fill="#a8a29e" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">RecordFiltered?</text>
+
+        <!-- BOXES -->
+        <!-- initial dot -->
+        <circle cx="55" cy="138" r="5" fill="#1c1917"/>
+
+        <!-- Unknown -->
+        <rect x="70" y="115" width="150" height="46" rx="20" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="145" y="142" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Unknown</text>
+
+        <!-- Open (FOCAL) -->
+        <rect x="300" y="115" width="160" height="46" rx="20" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1.2"/>
+        <text x="380" y="142" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Open</text>
+
+        <!-- Closed -->
+        <rect x="300" y="230" width="160" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="380" y="257" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Closed</text>
+
+        <!-- Open|Filtered -->
+        <rect x="520" y="230" width="170" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="605" y="257" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Open|Filtered</text>
+
+        <!-- Filtered -->
+        <rect x="300" y="345" width="160" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="380" y="372" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Filtered</text>
+
+        <!-- Unfiltered -->
+        <rect x="520" y="345" width="170" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="605" y="372" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Unfiltered</text>
+
+        <!-- Timeout -->
+        <rect x="520" y="460" width="170" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="605" y="487" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Timeout</text>
+
+        <!-- Persisted (final, double border) -->
+        <rect x="300" y="460" width="160" height="46" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1.2"/>
+        <rect x="306" y="466" width="148" height="34" rx="6" fill="none" stroke="#1c1917" stroke-width="0.8"/>
+        <text x="380" y="485" fill="#1c1917" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Persisted</text>
+
+        <!-- note -->
+        <rect x="30" y="430" width="160" height="120" rx="6" fill="rgba(28,25,23,0.02)" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="40" y="450" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">shouldPersist 策略:</text>
+        <text x="40" y="466" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• open → 始终落库</text>
+        <text x="40" y="482" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• filtered /</text>
+        <text x="48" y="496" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">open|filtered /</text>
+        <text x="48" y="510" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">unfiltered →</text>
+        <text x="48" y="524" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">RecordFiltered</text>
+        <text x="40" y="540" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">• closed / timeout →</text>
+        <text x="48" y="554" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">RecordClosed</text>
+
+        <!-- LEGEND -->
+        <line x1="30" y1="540" x2="740" y2="540" stroke="rgba(28,25,23,0.10)" stroke-width="0.8"/>
+        <circle cx="36" cy="558" r="5" fill="#1c1917"/>
+        <text x="48" y="562" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">初始</text>
+        <rect x="110" y="550" width="24" height="16" rx="8" fill="#faf6f0" stroke="#1c1917" stroke-width="1"/>
+        <text x="142" y="562" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">状态</text>
+        <rect x="200" y="550" width="24" height="16" rx="6" fill="rgba(217,119,6,0.06)" stroke="#d97706" stroke-width="1"/>
+        <text x="232" y="562" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">开放(关键)</text>
+        <rect x="320" y="550" width="24" height="16" rx="4" fill="#faf6f0" stroke="#1c1917" stroke-width="1.2"/>
+        <rect x="324" y="554" width="16" height="8" rx="2" fill="none" stroke="#1c1917" stroke-width="0.8"/>
+        <text x="352" y="562" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">终态(落库)</text>
+        <line x1="450" y1="558" x2="474" y2="558" stroke="#a8a29e" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="482" y="562" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">条件落库</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="card-eyebrow">STATES</p>
+        <div class="card-header"><div class="card-dot accent"></div><h3>7 个状态</h3></div>
+        <ul>
+          <li>• Unknown — 探测前初始态</li>
+          <li>• Open — 连接成功并取到 banner</li>
+          <li>• Closed / Filtered / Open|Filtered / Unfiltered / Timeout</li>
+          <li>• Persisted — 经 shouldPersist 判定后落库（双框=终态）</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="card-eyebrow">PERSIST</p>
+        <div class="card-header"><div class="card-dot muted"></div><h3>落库策略</h3></div>
+        <ul>
+          <li>• open 始终写入 ES（确认资产）</li>
+          <li>• filtered 类受 RecordFilteredPorts 控制</li>
+          <li>• closed / timeout 受 RecordClosedPorts 控制</li>
+          <li>• 域名路径端口缺 State 字段（待补）</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">atlas · 端口探测状态机</div>
+  </div>
+</body>
+</html>

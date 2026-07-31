@@ -65,6 +65,7 @@ func (s *Server) registerRoutes() {
 	s.registerAssets(api)
 	s.registerVuln(api)
 	s.registerConfig(api)
+	s.registerAudit(api)
 
 	// 可选：托管前端 SPA（非 /api 的 GET 回退到 index.html）
 	if s.deps.WebDir != "" {

@@ -1,1 +1,0 @@
-ALTER TABLE config DROP COLUMN IF EXISTS updated_at;

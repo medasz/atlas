@@ -10,6 +10,16 @@ type BlacklistItem struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// AuditLog 审计日志条目
+type AuditLog struct {
+	ID       int64     `json:"id"`
+	Operator string    `json:"operator"`
+	Time     time.Time `json:"time"`
+	Target   string    `json:"target"`
+	TaskID   string    `json:"task_id"`
+	Action   string    `json:"action"`
+}
+
 // Task 扫描/漏洞任务
 type Task struct {
 	ID        string         `json:"id"`

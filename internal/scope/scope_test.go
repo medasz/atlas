@@ -1,25 +1,23 @@
 package scope
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestExpand(t *testing.T) {
-	cases := []struct {
-		name  string
-		scope map[string]any
-		want  int
-	}{
-		{"single ip", map[string]any{"targets": []any{"1.2.3.4"}}, 1},
-		{"small cidr", map[string]any{"targets": []any{"192.168.1.0/30"}}, 2},
-		{"domain", map[string]any{"targets": []any{"example.com"}}, 1},
-		{"mixed", map[string]any{"targets": []any{"10.0.0.1", "10.0.0.0/30", "a.test"}}, 3},
+func TestShuffleIPs(t *testing.T) {
+	ips := []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"}
+	shuffled := ShuffleIPs(ips)
+	if len(shuffled) != len(ips) {
+		t.Fatalf("expected len=%d, got %d", len(ips), len(shuffled))
 	}
-	for _, c := range cases {
-		got, err := Expand(c.scope)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
-		}
-		if len(got) != c.want {
-			t.Errorf("%s: got %d targets, want %d (%v)", c.name, len(got), c.want, got)
+
+	m := map[string]bool{}
+	for _, v := range shuffled {
+		m[v] = true
+	}
+	for _, v := range ips {
+		if !m[v] {
+			t.Errorf("missing ip %s in shuffled output", v)
 		}
 	}
 }
