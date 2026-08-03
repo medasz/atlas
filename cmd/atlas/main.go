@@ -11,10 +11,11 @@ import (
 	"atlas/internal/audit"
 	"atlas/internal/blacklist"
 	"atlas/internal/config"
+	"atlas/internal/esasset"
 	"atlas/internal/fingerprint"
+	"atlas/internal/logger"
 	"atlas/internal/queue"
 	"atlas/internal/ratelimit"
-	"atlas/internal/esasset"
 	"atlas/internal/scan"
 	"atlas/internal/server"
 	"atlas/internal/store"
@@ -29,6 +30,10 @@ func main() {
 	webDir := flag.String("webdir", "", "path to built frontend (web/dist); if set, serve SPA")
 	templatesDir := flag.String("templates", "configs/templates", "path to vuln template yaml dir")
 	flag.Parse()
+
+	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
+		logger.SetLevel(lvl)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -146,7 +151,7 @@ func main() {
 	})
 
 	go func() {
-		log.Printf("atlas listening on %s", cfg.HTTP.Addr)
+		logger.Info("Atlas 网络资产测绘系统已就绪", "http_addr", cfg.HTTP.Addr, "scan_mode", cfg.Scan.DefaultMode, "max_concurrency", cfg.Scan.MaxConcurrency)
 		if err := srv.Run(); err != nil {
 			log.Fatalf("server: %v", err)
 		}

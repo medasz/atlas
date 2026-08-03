@@ -10,12 +10,13 @@ import (
 	"sync"
 	"time"
 
+	"atlas/internal/assetstore"
 	"atlas/internal/config"
 	"atlas/internal/fingerprint"
+	"atlas/internal/logger"
 	"atlas/internal/model"
 	"atlas/internal/ratelimit"
 	"atlas/internal/scan/tcpscan"
-	"atlas/internal/assetstore"
 	"atlas/internal/store"
 	"golang.org/x/net/publicsuffix"
 )
@@ -128,6 +129,7 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 		mu        sync.Mutex
 		openPorts []int
 	)
+	logger.Debug("开始探测目标", "target", ip, "ports_count", len(ports), "mode", live.DefaultMode)
 
 	if isV6 {
 		// IPv6 能力边界：raw 抓包/ICMPv6 判定与 IPv4 不同，本期强制降级 connect 并记日志。
@@ -219,6 +221,8 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[st
 			}
 			banner := grabBanner(conn, sc.timeout)
 			_ = conn.Close()
+
+			logger.Info("发现开放端口", "target", ip, "port", p, "banner", banner)
 
 			if sc.enrichChan != nil {
 				sc.enrichChan <- openPortEvent{IP: ip, Port: p, Banner: banner, IsV6: isV6}

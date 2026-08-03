@@ -14,6 +14,7 @@ import (
 
 	"atlas/internal/audit"
 	"atlas/internal/blacklist"
+	"atlas/internal/logger"
 	"atlas/internal/model"
 	"atlas/internal/queue"
 	"atlas/internal/ratelimit"
@@ -134,6 +135,7 @@ func (svc *Service) Create(ctx context.Context, operator, kind string, sc, sched
 	if svc.audit.Enabled() {
 		_ = svc.audit.Log(ctx, operator, fmt.Sprintf("task:%s", id), id, "task.create")
 	}
+	logger.Info("任务创建成功", "task_id", id, "kind", kind, "targets_count", len(targets), "items_count", len(specs))
 	return id, svc.dispatch(ctx, id)
 }
 
@@ -261,6 +263,7 @@ func (svc *Service) processOne(ctx context.Context, task model.Task, target, por
 		_ = svc.store.UpdateTaskProgress(ctx, task.ID, total, done)
 		if total > 0 && done >= total {
 			_ = svc.store.UpdateTaskStatus(ctx, task.ID, model.TaskDone)
+			logger.Info("任务已全部完成", "task_id", task.ID, "total_items", total)
 		}
 	}
 }

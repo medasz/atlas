@@ -10,7 +10,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -31,13 +31,18 @@ services:
     volumes:
       - ./configs/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 12
 
   atlas:
-    build: .
+    build:
+      context: .
+      target: backend
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,15 +51,21 @@ services:
       elasticsearch:
         condition: service_healthy
     environment:
+      TZ: "Asia/Shanghai"
+      LOG_LEVEL: "debug"
       ATLAS_PG_DSN: "postgres://postgres:postgres@postgres:5432/atlas?sslmode=disable"
       ATLAS_NATS_URL: "nats://nats:4222"
       ATLAS_ES_ADDR: "http://elasticsearch:9200"
-    ports:
-      - "8080:8080"
+      ATLAS_HTTP_ADDR: ":8080"
 
   # 第二个实例，共享同一 NATS/PG/ES，演示横向扩展（队列组负载均衡）
   atlas2:
-    build: .
+    build:
+      context: .
+      target: backend
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,12 +74,21 @@ services:
       elasticsearch:
         condition: service_healthy
     environment:
+      TZ: "Asia/Shanghai"
+      LOG_LEVEL: "debug"
       ATLAS_PG_DSN: "postgres://postgres:postgres@postgres:5432/atlas?sslmode=disable"
       ATLAS_NATS_URL: "nats://nats:4222"
       ATLAS_ES_ADDR: "http://elasticsearch:9200"
       ATLAS_HTTP_ADDR: ":8081"
+
+  web:
+    build:
+      context: .
+      target: frontend
     ports:
-      - "8081:8081"
+      - "8080:80"
+    depends_on:
+      - atlas
 
 volumes:
   pgdata:

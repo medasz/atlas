@@ -220,7 +220,6 @@ func configToKV(cfg *Config) map[string]string {
 		"auth_password":               cfg.Auth.Password,
 		"auth_secret":                 cfg.Auth.Secret,
 		"audit_enabled":               fmt.Sprintf("%t", cfg.Audit.Enabled),
-		"http_addr":                   cfg.HTTP.Addr,
 	}
 }
 
@@ -278,8 +277,6 @@ func applyKVToConfig(cfg *Config, kv map[string]string) {
 			if b, err := strconv.ParseBool(v); err == nil {
 				cfg.Audit.Enabled = b
 			}
-		case "http_addr":
-			cfg.HTTP.Addr = v
 		}
 	}
 }
@@ -400,7 +397,7 @@ func LoadFromDB(ctx context.Context, db DB, boot *Bootstrap) (*Config, error) {
 	cfg.Postgres.DSN = boot.PGDSN
 	cfg.NATS.URL = boot.NATSURL
 	cfg.Elastic.Addr = boot.ESAddr
-	if cfg.HTTP.Addr == "" && boot.HTTPAddr != "" {
+	if boot.HTTPAddr != "" {
 		cfg.HTTP.Addr = boot.HTTPAddr
 	}
 	return cfg, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"atlas/internal/logger"
 	"atlas/internal/model"
 )
 
@@ -52,6 +53,7 @@ func (sc *Scanner) enrichWorker(ctx context.Context) {
 				LastSeen: time.Now(),
 			}
 			sc.httpEnrich(evt.IP, evt.Port, evt.Banner, &portAsset)
+			logger.Debug("HTTP指纹探测完成", "target", evt.IP, "port", evt.Port, "server", portAsset.Server, "title", portAsset.Title)
 			select {
 			case sc.writerChan <- portAsset:
 			case <-ctx.Done():
@@ -70,9 +72,12 @@ func (sc *Scanner) batchWriter(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
+		start := time.Now()
+		count := len(batch)
 		for _, a := range batch {
 			sc.upsert(ctx, a)
 		}
+		logger.Info("资产批量落库完成", "count", count, "cost_ms", time.Since(start).Milliseconds())
 		batch = batch[:0]
 	}
 
