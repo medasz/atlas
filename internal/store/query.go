@@ -53,6 +53,9 @@ var fieldDefs = map[string]fdef{
 	"city":          {"geo.city", "keyword", false, "geo->>'city'", "", "", "text"},
 	"cert":          {"_all", "all", true, "", "cert::text", "", ""},
 	"is_ipv6":       {"is_ipv6", "bool", false, "is_ipv6", "is_ipv6", "is_ipv6", "bool"},
+	"state":         {"state", "keyword", false, "", "state", "", "text"},
+	"status":        {"state", "keyword", false, "", "state", "", "text"},
+	"port_status":   {"state", "keyword", false, "", "state", "", "text"},
 	"_all":          {"_all", "all", true, "", "", "", ""},
 }
 

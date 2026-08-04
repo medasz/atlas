@@ -141,4 +141,19 @@ func TestParseQueryHostDomainIPv6(t *testing.T) {
 			t.Fatalf("expected proto ILIKE $1, got %q", sql)
 		}
 	}
+	// state/status 映射到 state 字段
+	{
+		st := ParseQuery(`status="open"`).(cmpNode)
+		stes := st.toES()
+		match, ok := stes["match"].(map[string]any)
+		if !ok || match["state"] != "open" {
+			t.Fatalf("expected match state open, got %#v", stes)
+		}
+		stExact := ParseQuery(`status=="open"`).(cmpNode)
+		stExactEs := stExact.toES()
+		term, ok := stExactEs["term"].(map[string]any)
+		if !ok || term["state"] != "open" {
+			t.Fatalf("expected term state open, got %#v", stExactEs)
+		}
+	}
 }

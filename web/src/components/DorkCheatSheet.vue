@@ -137,7 +137,7 @@ const logic = [
 ]
 
 const fieldGroups = [
-  { cat: '网络', items: ['ip', 'port', 'protocol', 'base_protocol'] },
+  { cat: '网络', items: ['ip', 'port', 'protocol', 'base_protocol', 'state', 'status'] },
   { cat: '服务', items: ['server', 'banner', 'title', 'body', 'header'] },
   { cat: '资产', items: ['os', 'org', 'asn', 'country', 'region', 'city'] },
   { cat: '主机/域名', items: ['host', 'domain', 'app', 'product'] },
@@ -147,6 +147,7 @@ const fieldGroups = [
 const examples = [
   { q: 'ip="1.1.1.1"', desc: '查询指定 IP 的资产' },
   { q: 'ip="1.1.1.1" && port="443"', desc: '指定 IP 的 443 端口' },
+  { q: 'status="open" && port="80"', desc: '开放 80 端口的资产' },
   { q: 'server="nginx" && (port="80" || port="443")', desc: '运行 nginx 的 80 / 443 端口' },
   { q: 'title="登录" && country="CN"', desc: '标题含“登录”且位于中国' },
   { q: 'is_ipv6=true', desc: '仅 IPv6 资产' },

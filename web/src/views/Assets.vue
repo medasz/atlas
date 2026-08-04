@@ -66,23 +66,45 @@
             <span>{{ Array.isArray(row.domains) && row.domains.length ? row.domains.join(', ') : (row.domain || row.name || row.host || row.registrable_domain || '-') }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="端口" width="110" show-overflow-tooltip>
+        <el-table-column label="端口" width="90" show-overflow-tooltip>
           <template #default="{ row }">
             <span>{{ Array.isArray(row.open_ports) ? (row.open_ports.length ? row.open_ports.join(', ') : '-') : (row.port || '-') }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="服务" width="130" show-overflow-tooltip>
+        <el-table-column label="协议" width="80">
+          <template #default="{ row }">
+            <span>{{ row.proto || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="端口状态" width="100" align="center">
+          <template #default="{ row }">
+            <StatusTag :text="portStatusText(row)" :tone="portStatusTone(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="服务" width="120" show-overflow-tooltip>
           <template #default="{ row }">
             <span>{{ Array.isArray(row.services) ? (row.services.length ? row.services.join(', ') : '-') : (row.service || '-') }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="version" label="版本" width="120" />
-        <el-table-column label="标题" min-width="170" show-overflow-tooltip>
+        <el-table-column prop="version" label="版本" width="110" />
+        <el-table-column label="标题" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="cell-title">{{ Array.isArray(row.titles) ? (row.titles.length ? row.titles.join(' | ') : '-') : (row.title || '-') }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="server" label="服务(Web)" width="130" show-overflow-tooltip />
+        <el-table-column label="服务(Web)" width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ (row.webinfo && row.webinfo.server) || row.server || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="技术栈/指纹" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="techOf(row) !== '-'" class="tech-tags">
+              <span v-for="t in techList(row)" :key="t" class="tech-tag">{{ t }}</span>
+            </span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="org" label="组织" width="140" show-overflow-tooltip />
         <el-table-column prop="asn" label="ASN" width="80" />
         <el-table-column label="IPv6" width="72" align="center">
@@ -123,31 +145,6 @@
       <template v-if="detail">
         <DetailGrid :items="hostItems" />
 
-        <SectionLabel label="端口 · 服务 · 指纹" />
-        <el-table :data="detail.ports" size="small" stripe class="sub-table">
-          <el-table-column prop="port" label="端口" width="72" />
-          <el-table-column prop="proto" label="协议" width="70" />
-          <el-table-column prop="service" label="服务" width="110" />
-          <el-table-column prop="version" label="版本" width="120" />
-          <el-table-column prop="title" label="标题" min-width="150" show-overflow-tooltip />
-          <el-table-column label="服务" width="140" show-overflow-tooltip>
-            <template #default="{ row }">{{ (row.webinfo && row.webinfo.server) || row.server || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="技术栈" min-width="170" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span v-if="techOf(row) !== '-'" class="tech-tags">
-                <span v-for="t in techList(row)" :key="t" class="tech-tag">{{ t }}</span>
-              </span>
-              <span v-else class="text-muted">—</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="IPv6" width="64" align="center">
-            <template #default="{ row }">
-              <span class="ipv6-badge" :class="{ on: row.is_ipv6 }">{{ row.is_ipv6 ? 'v6' : 'v4' }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
-
         <SectionLabel label="漏洞" :count="(detail.vulns || []).length" />
         <el-table v-if="detail.vulns && detail.vulns.length" :data="detail.vulns" size="small" stripe class="sub-table">
           <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
@@ -173,6 +170,7 @@ import DialogHeader from '../components/DialogHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import SectionLabel from '../components/SectionLabel.vue'
 import DorkCheatSheet from '../components/DorkCheatSheet.vue'
+import StatusTag from '../components/StatusTag.vue'
 
 const icons = {
   host: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>',
@@ -243,12 +241,12 @@ function onApplyDork(query) {
 }
 
 function techOf(row) {
-  const t = row.webinfo && row.webinfo.tech
-  if (Array.isArray(t)) return t.join(', ')
+  const t = (row.webinfo && row.webinfo.tech) || row.tech
+  if (Array.isArray(t)) return t.length ? t.join(', ') : '-'
   return t || '-'
 }
 function techList(row) {
-  const t = row.webinfo && row.webinfo.tech
+  const t = (row.webinfo && row.webinfo.tech) || row.tech
   return Array.isArray(t) ? t : t ? [t] : []
 }
 function sevClass(lv) {
@@ -258,6 +256,49 @@ function sevClass(lv) {
 }
 function sevLabel(lv) {
   return ['信息', '低危', '中危', '高危', '严重'][lv] || lv
+}
+
+function portStatusText(row) {
+  if (row.aggregated) {
+    return '开放'
+  }
+  const st = (row.state || row.status || (row.port ? 'open' : '')).toLowerCase()
+  switch (st) {
+    case 'open':
+      return '开放'
+    case 'closed':
+      return '关闭'
+    case 'filtered':
+      return '被过滤'
+    case 'timeout':
+      return '超时'
+    case 'open|filtered':
+      return '开放/过滤'
+    case 'unfiltered':
+      return '未过滤'
+    default:
+      return st || '未知'
+  }
+}
+
+function portStatusTone(row) {
+  if (row.aggregated) {
+    return 'green'
+  }
+  const st = (row.state || row.status || (row.port ? 'open' : '')).toLowerCase()
+  switch (st) {
+    case 'open':
+      return 'green'
+    case 'closed':
+      return 'red'
+    case 'filtered':
+    case 'timeout':
+    case 'open|filtered':
+    case 'unfiltered':
+      return 'amber'
+    default:
+      return 'muted'
+  }
 }
 
 async function openHost(ip) {
