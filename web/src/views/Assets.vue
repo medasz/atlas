@@ -97,16 +97,6 @@
             <span>{{ (row.webinfo && row.webinfo.server) || row.server || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="技术栈/指纹" min-width="170" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="techOf(row) !== '-'" class="tech-tags">
-              <span v-for="t in techList(row)" :key="t" class="tech-tag">{{ t }}</span>
-            </span>
-            <span v-else class="text-muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="org" label="组织" width="140" show-overflow-tooltip />
-        <el-table-column prop="asn" label="ASN" width="80" />
         <el-table-column label="IPv6" width="72" align="center">
           <template #default="{ row }">
             <span class="ipv6-badge" :class="{ on: row.is_ipv6 }">{{ row.is_ipv6 ? 'v6' : 'v4' }}</span>
@@ -196,12 +186,25 @@ const hasDomain = computed(() => items.value.some(r => !r.ip && (r.domain || r.n
 const hostItems = computed(() => {
   if (!detail.value || !detail.value.host) return []
   const h = detail.value.host
+  const ports = detail.value.ports || []
+
+  // 汇总主机及端口下的技术栈/指纹
+  const techSet = new Set()
+  if (Array.isArray(h.tech)) h.tech.forEach(t => t && techSet.add(t))
+  if (h.webinfo && Array.isArray(h.webinfo.tech)) h.webinfo.tech.forEach(t => t && techSet.add(t))
+  ports.forEach(p => {
+    techList(p).forEach(t => t && techSet.add(t))
+  })
+  const techStr = techSet.size > 0 ? Array.from(techSet).join(', ') : '—'
+
   return [
     { key: 'IP', value: h.ip },
     { key: 'IPv6', value: h.is_ipv6 ? '是' : '否' },
     { key: '所属组织', value: h.org || '—' },
+    { key: 'ASN', value: h.asn ? h.asn : '—' },
     { key: '操作系统', value: h.os || '—' },
-    { key: '开放端口', value: (h.open_ports || []).length, highlight: true }
+    { key: '技术栈 / 指纹', value: techStr },
+    { key: '开放端口', value: Array.isArray(h.open_ports) ? h.open_ports.length : (ports.length || (h.port ? 1 : 0)), highlight: true }
   ]
 })
 
