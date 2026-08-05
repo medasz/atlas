@@ -31,6 +31,7 @@ const assetMapping = `{
       "port":     { "type": "integer" },
       "proto":    { "type": "keyword" },
       "service":  { "type": "keyword" },
+	  "state":    { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
       "version":  { "type": "keyword" },
       "banner":   { "type": "text" },
       "title":    { "type": "text" },

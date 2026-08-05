@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"testing"
 
+	"atlas/internal/assetstore"
 	"atlas/internal/config"
 	"atlas/internal/model"
 	"atlas/internal/store"
@@ -32,6 +33,15 @@ func (s *deleteAssetStore) GetHost(context.Context, string) (model.Asset, error)
 }
 func (s *deleteAssetStore) ListPortsByIP(context.Context, string) ([]model.Asset, error) {
 	return s.ports, nil
+}
+func (s *deleteAssetStore) GetHostAggregate(context.Context, string) (assetstore.HostAggregate, error) {
+	return assetstore.HostAggregate{}, nil
+}
+func (s *deleteAssetStore) ListPortPage(context.Context, string, string, string, int, int) (assetstore.PortPage, error) {
+	return assetstore.PortPage{}, nil
+}
+func (s *deleteAssetStore) GetPort(context.Context, string, int) (model.Asset, error) {
+	return model.Asset{}, nil
 }
 func (s *deleteAssetStore) ListDomains(context.Context) ([]model.Asset, error) { return nil, nil }
 func (s *deleteAssetStore) GetHostDetail(context.Context, string) (model.Asset, []model.Asset, error) {

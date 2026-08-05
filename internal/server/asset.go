@@ -18,8 +18,93 @@ func (s *Server) registerAssets(g *gin.RouterGroup) {
 	g.GET("/assets", s.searchAssets)
 	g.DELETE("/assets", s.deleteAsset)
 	g.GET("/hosts/:ip", s.getHost)
+	g.GET("/hosts/:ip/aggregate", s.getHostAggregate)
+	g.GET("/hosts/:ip/ports", s.listHostPorts)
+	g.GET("/hosts/:ip/ports/:port", s.getHostPort)
 	g.GET("/hosts/:ip/detail", s.getHostDetail)
 	g.DELETE("/hosts/:ip", s.deleteHost)
+}
+
+func (s *Server) getHostAggregate(c *gin.Context) {
+	ip := c.Param("ip")
+	if net.ParseIP(ip) == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
+		return
+	}
+	result, err := s.deps.Asset.GetHostAggregate(c.Request.Context(), ip)
+	if errors.Is(err, assetstore.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "host not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) listHostPorts(c *gin.Context) {
+	ip := c.Param("ip")
+	if net.ParseIP(ip) == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+	state := strings.ToLower(strings.TrimSpace(c.Query("state")))
+	if state != "" && !validPortState(state) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid port state"})
+		return
+	}
+	sortOrder := c.DefaultQuery("sort", "port_asc")
+	if sortOrder != "port_asc" && sortOrder != "port_desc" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort"})
+		return
+	}
+	result, err := s.deps.Asset.ListPortPage(c.Request.Context(), ip, state, sortOrder, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) getHostPort(c *gin.Context) {
+	ip := c.Param("ip")
+	if net.ParseIP(ip) == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
+		return
+	}
+	port, err := strconv.Atoi(c.Param("port"))
+	if err != nil || port < 1 || port > 65535 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid port"})
+		return
+	}
+	asset, err := s.deps.Asset.GetPort(c.Request.Context(), ip, port)
+	if errors.Is(err, assetstore.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "port not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"port": asset})
+}
+
+func validPortState(state string) bool {
+	switch state {
+	case "open", "closed", "filtered", "timeout", "open|filtered", "unfiltered", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 // searchAssets 资产检索（仅 ES），支持 page/page_size 标准分页及 aggregated 聚合模式

@@ -2,6 +2,7 @@ package esasset
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -182,6 +183,171 @@ func (s *ESAssetStore) ListPortsByIP(ctx context.Context, ip string) ([]model.As
 		out = append(out, assetFromSource(it))
 	}
 	return out, nil
+}
+
+func portQuery(ip, state string) map[string]any {
+	must := []any{
+		map[string]any{"exists": map[string]any{"field": "port"}},
+		map[string]any{"term": map[string]any{"ip": ip}},
+	}
+	if state != "" {
+		must = append(must, map[string]any{"term": map[string]any{"state.keyword": state}})
+	}
+	return map[string]any{"bool": map[string]any{"must": must}}
+}
+
+// GetHostAggregate returns counts and one small representative port document.
+// The response stays small even when the host has many stored ports.
+func (s *ESAssetStore) GetHostAggregate(ctx context.Context, ip string) (assetstore.HostAggregate, error) {
+	q := map[string]any{
+		"query":            portQuery(ip, ""),
+		"size":             1,
+		"track_total_hits": true,
+		"_source":          []string{"ip", "os", "org", "asn", "is_ipv6", "domain", "host", "first_seen", "last_seen"},
+		"sort":             []any{map[string]any{"last_seen": map[string]any{"order": "desc"}}},
+		"aggs": map[string]any{
+			"states": map[string]any{"terms": map[string]any{"field": "state.keyword", "size": 32, "missing": "unknown"}},
+		},
+	}
+	out, err := s.es.SearchAgg(ctx, q)
+	if err != nil {
+		return assetstore.HostAggregate{}, err
+	}
+	total := nestedInt64(out, "hits", "total", "value")
+	if total == 0 {
+		return assetstore.HostAggregate{}, assetstore.ErrNotFound
+	}
+	agg := assetstore.HostAggregate{Total: total, StateCounts: aggregationCounts(out, "states")}
+	if hits, ok := nestedSlice(out, "hits", "hits"); ok && len(hits) > 0 {
+		if hit, ok := hits[0].(map[string]any); ok {
+			if source, ok := hit["_source"].(map[string]any); ok {
+				agg.Host = assetFromSource(source)
+			}
+		}
+	}
+	agg.Host.IP = ip
+	return agg, nil
+}
+
+// ListPortPage loads the table columns only. Large fingerprint fields are
+// omitted and fetched by GetPort after the user opens a port detail.
+func (s *ESAssetStore) ListPortPage(ctx context.Context, ip, state, sortOrder string, page, pageSize int) (assetstore.PortPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	order := "asc"
+	if sortOrder == "port_desc" {
+		order = "desc"
+	}
+	q := map[string]any{
+		"query":            portQuery(ip, state),
+		"from":             (page - 1) * pageSize,
+		"size":             pageSize,
+		"track_total_hits": true,
+		"_source":          []string{"ip", "port", "proto", "state", "service", "version", "last_seen"},
+		"sort":             []any{map[string]any{"port": map[string]any{"order": order}}},
+		"aggs": map[string]any{
+			"states": map[string]any{"terms": map[string]any{"field": "state.keyword", "size": 32, "missing": "unknown"}},
+		},
+	}
+	items, total, err := s.es.Search(ctx, q)
+	if err != nil {
+		return assetstore.PortPage{}, err
+	}
+	result := assetstore.PortPage{Items: make([]model.Asset, 0, len(items)), Total: total}
+	for _, item := range items {
+		result.Items = append(result.Items, assetFromSource(item))
+	}
+	// Use an aggregation-only request so filtering does not make the page's
+	// state summary misleading. This is lightweight and returns no documents.
+	counts, err := s.portStateCounts(ctx, ip)
+	if err != nil {
+		return assetstore.PortPage{}, err
+	}
+	result.StateCounts = counts
+	return result, nil
+}
+
+func (s *ESAssetStore) portStateCounts(ctx context.Context, ip string) (map[string]int64, error) {
+	out, err := s.es.SearchAgg(ctx, map[string]any{
+		"query": portQuery(ip, ""), "size": 0,
+		"aggs": map[string]any{"states": map[string]any{"terms": map[string]any{"field": "state.keyword", "size": 32, "missing": "unknown"}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return aggregationCounts(out, "states"), nil
+}
+
+func (s *ESAssetStore) GetPort(ctx context.Context, ip string, port int) (model.Asset, error) {
+	source, err := s.es.Get(ctx, model.AssetID(model.Asset{IP: ip, Port: port}))
+	if errors.Is(err, store.ErrNotFound) {
+		return model.Asset{}, assetstore.ErrNotFound
+	}
+	if err != nil {
+		return model.Asset{}, err
+	}
+	asset := assetFromSource(source)
+	if asset.IP != ip || asset.Port != port {
+		return model.Asset{}, assetstore.ErrNotFound
+	}
+	return asset, nil
+}
+
+func nestedInt64(value map[string]any, keys ...string) int64 {
+	var current any = value
+	for _, key := range keys {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return 0
+		}
+		current = m[key]
+	}
+	switch v := current.(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func nestedSlice(value map[string]any, keys ...string) ([]any, bool) {
+	var current any = value
+	for _, key := range keys {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = m[key]
+	}
+	items, ok := current.([]any)
+	return items, ok
+}
+
+func aggregationCounts(value map[string]any, name string) map[string]int64 {
+	counts := make(map[string]int64)
+	buckets, ok := nestedSlice(value, "aggregations", name, "buckets")
+	if !ok {
+		return counts
+	}
+	for _, bucket := range buckets {
+		m, ok := bucket.(map[string]any)
+		if !ok {
+			continue
+		}
+		key, _ := m["key"].(string)
+		if key != "" {
+			counts[key] = nestedInt64(m, "doc_count")
+		}
+	}
+	return counts
 }
 
 // ListDomains 列出全部域名（按 last_seen 倒序）

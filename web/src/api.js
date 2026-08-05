@@ -27,6 +27,13 @@ export const api = {
     request('GET', '/api/assets?q=' + encodeURIComponent(q || '') + '&type=' + (type || '') +
       '&page=' + page + '&page_size=' + pageSize + (aggregated ? '&aggregated=true' : '')),
   getHost: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip)),
+  getHostAggregate: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/aggregate'),
+  listHostPorts: (ip, page = 1, pageSize = 50, state = '', sort = 'port_asc') => {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), sort })
+    if (state) params.set('state', state)
+    return request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/ports?' + params.toString())
+  },
+  getHostPort: (ip, port) => request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/ports/' + encodeURIComponent(port)),
   getHostDetail: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/detail'),
   deleteAsset: ({ ip, port, domain }) => {
     const params = new URLSearchParams()
