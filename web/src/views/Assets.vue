@@ -28,11 +28,6 @@
           </svg>
           <span>检索</span>
         </button>
-        <button class="agg-trigger" :class="{ active: isAggregated }" type="button"
-          @click="toggleAggregated" title="切换 IP 聚合视图">
-          <span class="st-ico" v-html="icons.agg"></span>
-          <span class="st-label">IP 聚合</span>
-        </button>
         <button class="syntax-trigger" :class="{ active: syntaxOpen }" type="button"
           @click="syntaxOpen = !syntaxOpen" title="检索语法手册">
           <span class="st-ico" v-html="icons.book"></span>
@@ -51,7 +46,7 @@
     <div class="results-section">
       <div class="results-meta">
         <span class="results-count" v-if="total">
-          共 <span class="count-num">{{ total }}</span> 条 <span v-if="isAggregated">(已聚合)</span> · 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页
+          共 <span class="count-num">{{ total }}</span> 条 · 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页
         </span>
       </div>
 
@@ -102,9 +97,12 @@
             <span class="ipv6-badge" :class="{ on: row.is_ipv6 }">{{ row.is_ipv6 ? 'v6' : 'v4' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="" width="92" align="center" fixed="right">
+        <el-table-column label="" width="128" align="center" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
+              <button v-if="row.ip" class="aggregate-trigger" title="按 IP 聚合查看" aria-label="按 IP 聚合查看" @click="openIPAggregate(row.ip)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor"/><circle cx="16" cy="12" r="2" fill="currentColor"/></svg>
+              </button>
               <button v-if="row.ip" class="detail-trigger" :title="detailButtonTitle(row)" :aria-label="detailButtonTitle(row)" @click="openAssetDetail(row)">
                 <span>详情</span>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
@@ -169,6 +167,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Delete as DeleteIcon, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
@@ -185,13 +184,13 @@ const icons = {
 }
 
 const q = ref('')
+const router = useRouter()
 const items = ref([])
 const loading = ref(false)
 const hostVisible = ref(false)
 const detail = ref(null)
 const selectedAsset = ref(null)
 const syntaxOpen = ref(false)
-const isAggregated = ref(false)
 const deletingKey = ref('')
 
 // 分页状态
@@ -257,17 +256,12 @@ const detailItems = computed(() => {
   ]
 })
 
-function toggleAggregated() {
-  isAggregated.value = !isAggregated.value
-  doSearch(true)
-}
-
 // reset=true 时回到首页（检索条件变化或清空）
 async function doSearch(reset) {
   if (reset) page.value = 1
   loading.value = true
   try {
-    const r = await api.searchAssets(q.value, '', page.value, pageSize.value, isAggregated.value)
+    const r = await api.searchAssets(q.value, '', page.value, pageSize.value)
     items.value = r.items || []
     total.value = r.total || 0
   } finally {
@@ -311,9 +305,6 @@ function sevLabel(lv) {
 }
 
 function portStatusText(row) {
-  if (row.aggregated) {
-    return '开放'
-  }
   const st = (row.state || row.status || (row.port ? 'open' : '')).toLowerCase()
   switch (st) {
     case 'open':
@@ -334,9 +325,6 @@ function portStatusText(row) {
 }
 
 function portStatusTone(row) {
-  if (row.aggregated) {
-    return 'green'
-  }
   const st = (row.state || row.status || (row.port ? 'open' : '')).toLowerCase()
   switch (st) {
     case 'open':
@@ -355,6 +343,10 @@ function portStatusTone(row) {
 
 function detailButtonTitle(row) {
   return row.port ? '查看端口详情' : '查看主机详情'
+}
+
+function openIPAggregate(ip) {
+  router.push({ path: `/assets/${encodeURIComponent(ip)}/aggregate` })
 }
 
 async function openAssetDetail(row) {
@@ -468,7 +460,6 @@ onMounted(() => doSearch(true))
 .search-btn.loading svg { animation: spin 1s linear infinite; }
 
 /* ===== 语法/聚合 按钮 ===== */
-.agg-trigger,
 .syntax-trigger {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 11px 16px;
@@ -479,11 +470,8 @@ onMounted(() => doSearch(true))
   font-family: var(--font-heading); font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
   cursor: pointer; transition: all 0.22s ease; white-space: nowrap;
 }
-.agg-trigger svg,
 .syntax-trigger svg { width: 15px; height: 15px; }
-.agg-trigger:hover,
 .syntax-trigger:hover { border-color: rgba(0, 212, 255, 0.4); color: var(--accent-cyan); }
-.agg-trigger.active,
 .syntax-trigger.active {
   color: var(--accent-cyan);
   background: rgba(0, 212, 255, 0.08);
@@ -577,6 +565,14 @@ onMounted(() => doSearch(true))
 .detail-trigger span { display: none; }
 .detail-trigger svg { width: 12px; height: 12px; }
 .detail-trigger:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.06); }
+
+.aggregate-trigger {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  background: transparent; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; transition: all 0.2s ease;
+}
+.aggregate-trigger svg { width: 14px; height: 14px; }
+.aggregate-trigger:hover { color: var(--accent-violet); border-color: rgba(123,97,255,0.5); background: rgba(123,97,255,0.08); }
 
 .row-actions { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 62px; }
 .delete-trigger {
