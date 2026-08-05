@@ -476,6 +476,16 @@ func assetFromSource(m map[string]any) model.Asset {
 	if v, ok := m["whois"].(map[string]any); ok {
 		a.Whois = v
 	}
+	if v, ok := m["first_seen"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			a.FirstSeen = parsed
+		}
+	}
+	if v, ok := m["last_seen"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			a.LastSeen = parsed
+		}
+	}
 	return a
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"atlas/internal/model"
 	"atlas/internal/store"
@@ -30,6 +31,20 @@ func TestUpsertPortID(t *testing.T) {
 	}
 	if gotID != "port:1.2.3.4:22" {
 		t.Fatalf("unexpected index id: %q", gotID)
+	}
+}
+
+func TestAssetFromSourceParsesObservationTimes(t *testing.T) {
+	asset := assetFromSource(map[string]any{
+		"ip":         "192.168.30.34",
+		"port":       float64(443),
+		"first_seen": "2026-08-05T10:20:30.123Z",
+		"last_seen":  "2026-08-05T11:20:30.456Z",
+	})
+	firstSeen, _ := time.Parse(time.RFC3339Nano, "2026-08-05T10:20:30.123Z")
+	lastSeen, _ := time.Parse(time.RFC3339Nano, "2026-08-05T11:20:30.456Z")
+	if !asset.FirstSeen.Equal(firstSeen) || !asset.LastSeen.Equal(lastSeen) {
+		t.Fatalf("observation times were not restored: %+v", asset)
 	}
 }
 
