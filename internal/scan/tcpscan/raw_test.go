@@ -78,7 +78,7 @@ func TestCaptureResponsesSyn(t *testing.T) {
 		makeResp(testMAC, testMAC, target, net.ParseIP("10.0.0.1"), uint16(81), srcPort, tcpRST),
 	}
 	h := &mockHandle{packets: pkts, link: layers.LinkTypeEthernet}
-	res := captureResponses(context.Background(), h, target, srcPort, []int{80, 81, 82}, ModeSyn, 150*time.Millisecond)
+	res, stats := captureResponsesWithStats(context.Background(), h, target, srcPort, []int{80, 81, 82}, ModeSyn, 150*time.Millisecond)
 	if res[80].State != Open {
 		t.Errorf("端口80 期望 open, 实际 %s", res[80].State)
 	}
@@ -87,6 +87,9 @@ func TestCaptureResponsesSyn(t *testing.T) {
 	}
 	if res[82].State != Timeout {
 		t.Errorf("端口82 期望 timeout（无响应）, 实际 %s", res[82].State)
+	}
+	if stats.FramesRead != 2 || stats.TCPMatchedPort != 2 || stats.SYNACK != 1 || stats.RST != 1 {
+		t.Errorf("unexpected capture statistics: %+v", stats)
 	}
 }
 

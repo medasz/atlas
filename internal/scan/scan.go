@@ -122,7 +122,7 @@ func (sc *Scanner) Process(ctx context.Context, task model.Task, target, ports s
 		plist = sc.portsFor(task)
 	}
 	if net.ParseIP(target) != nil {
-		return sc.scanHost(ctx, target, plist, task.ScanConfig)
+		return sc.scanHost(ctx, task.ID, target, ports, plist, task.ScanConfig)
 	}
 	return sc.scanDomain(ctx, target, plist)
 }
@@ -142,7 +142,7 @@ func (sc *Scanner) portsFor(task model.Task) []int {
 // 按配置模式分派：raw 模式（SYN/ACK/FIN/Null/Xmas）整块广发 + 窗口抓包；
 // connect 模式逐端口 goroutine 全连接（保留原限速 + panic 安全网）。
 // raw 抓包不可用时自动降级为 connect。
-func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int, probe model.ScanConfigSnapshot) (map[string]any, error) {
+func (sc *Scanner) scanHost(ctx context.Context, taskID, ip, requestedRange string, ports []int, probe model.ScanConfigSnapshot) (map[string]any, error) {
 	// Probe behavior is fixed by the task snapshot, not live configuration.
 	live := probe
 	isV6 := isIPv6(ip)
@@ -181,6 +181,8 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int, probe m
 		_ = sc.rate.WaitGlobal(ctx)
 		_ = sc.rate.WaitTarget(ctx, ip)
 		opts := tcpscan.Options{
+			TaskID:         taskID,
+			PortRange:      scanPortRange(requestedRange, ports),
 			Timeout:        time.Duration(live.RawCaptureWindowSec) * time.Second,
 			Retries:        live.RawRetries,
 			Iface:          live.RawIface,
@@ -273,6 +275,25 @@ func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int, probe m
 	}
 	wg.Wait()
 	return sc.finishHost(ctx, ip, isV6, openPorts)
+}
+
+func scanPortRange(requested string, ports []int) string {
+	if requested != "" {
+		return requested
+	}
+	if len(ports) == 0 {
+		return "-"
+	}
+	min, max := ports[0], ports[0]
+	for _, port := range ports[1:] {
+		if port < min {
+			min = port
+		}
+		if port > max {
+			max = port
+		}
+	}
+	return fmt.Sprintf("%d-%d (%d ports)", min, max, len(ports))
 }
 
 // finishHost 将主机在线打卡与生命周期落库至 PostgreSQL（不再向 ES 写入 port:<ip>:0 垃圾数据）并返回扫描结果摘要。

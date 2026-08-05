@@ -41,6 +41,26 @@ func IsRawUnavailable(err error) bool {
 // 模式差异仅体现在发包 TCP flags，响应分类逻辑共享。
 type rawScanner struct{ mode Mode }
 
+type rawSendStats struct {
+	Attempted   int
+	Written     int
+	WriteErrors int
+}
+
+type rawCaptureStats struct {
+	FramesRead        int
+	DecodeErrors      int
+	TCPToSourcePort   int
+	TCPForeignSource  int
+	TCPMatchedPort    int
+	TCPUnmatchedPort  int
+	SYNACK            int
+	RST               int
+	ICMPUnreachable   int
+	ICMPMatchedPort   int
+	ICMPUnmatchedPort int
+}
+
 // NewRaw 返回指定 raw 模式的 Scanner。
 func NewRaw(mode Mode) Scanner { return rawScanner{mode: mode} }
 
@@ -120,28 +140,52 @@ func (r rawScanner) Scan(ctx context.Context, target string, ports []int, opts O
 		window = 3 * time.Second
 	}
 	srcPort := pickSrcPort(opts)
-	sendProbes(handle, srcIP, srcMAC, dstMAC, srcPort, dstIP, ports, r.mode.flags(), opts.Retries)
-	return captureResponses(ctx, handle, dstIP, srcPort, ports, r.mode, window), nil
+	log.Printf("tcpscan: raw path task_id=%s port_range=%s target=%s mode=%s iface=%s source_ip=%s next_hop=%s source_port=%d target_mac=%s ports_count=%d retries=%d capture_window_ms=%d",
+		traceValue(opts.TaskID), traceValue(opts.PortRange), target, r.mode, route.Iface, srcIP, route.NextHop, srcPort, dstMAC, len(ports), opts.Retries, window.Milliseconds())
+	startedAt := time.Now()
+	sent := sendProbes(handle, srcIP, srcMAC, dstMAC, srcPort, dstIP, ports, r.mode.flags(), opts.Retries)
+	results, captured := captureResponsesWithStats(ctx, handle, dstIP, srcPort, ports, r.mode, window)
+	states := countStates(results)
+	log.Printf("tcpscan: raw result task_id=%s port_range=%s target=%s mode=%s duration_ms=%d probe_attempted=%d frames_written=%d write_errors=%d frames_read=%d tcp_to_source_port=%d tcp_foreign_source=%d tcp_matched_port=%d tcp_unmatched_port=%d syn_ack=%d rst=%d icmp_unreachable=%d icmp_matched_port=%d icmp_unmatched_port=%d decode_errors=%d state_open=%d state_closed=%d state_filtered=%d state_timeout=%d state_open_filtered=%d state_unfiltered=%d",
+		traceValue(opts.TaskID), traceValue(opts.PortRange), target, r.mode, time.Since(startedAt).Milliseconds(), sent.Attempted, sent.Written, sent.WriteErrors, captured.FramesRead, captured.TCPToSourcePort, captured.TCPForeignSource, captured.TCPMatchedPort, captured.TCPUnmatchedPort, captured.SYNACK, captured.RST, captured.ICMPUnreachable, captured.ICMPMatchedPort, captured.ICMPUnmatchedPort, captured.DecodeErrors, states[Open], states[Closed], states[Filtered], states[Timeout], states[OpenFiltered], states[Unfiltered])
+	if captured.TCPMatchedPort+captured.ICMPMatchedPort == 0 {
+		log.Printf("tcpscan: raw warning task_id=%s port_range=%s target=%s mode=%s no matched replies captured; open|filtered or filtered results may reflect a silent target, filtering, or an asymmetric return path", traceValue(opts.TaskID), traceValue(opts.PortRange), target, r.mode)
+	}
+	return results, nil
 }
 
 // sendProbes 将整块端口的探测包发出（retries+1 轮广发）。
-func sendProbes(handle linkLayer, srcIP net.IP, srcMAC, dstMAC net.HardwareAddr, srcPort uint16, dstIP net.IP, ports []int, flags uint8, retries int) {
+func sendProbes(handle linkLayer, srcIP net.IP, srcMAC, dstMAC net.HardwareAddr, srcPort uint16, dstIP net.IP, ports []int, flags uint8, retries int) rawSendStats {
+	stats := rawSendStats{}
 	sends := retries + 1
 	for i := 0; i < sends; i++ {
 		for _, p := range ports {
+			stats.Attempted++
 			b, err := buildProbe(srcIP, srcMAC, dstMAC, srcPort, dstIP, uint16(p), flags)
 			if err != nil {
+				stats.WriteErrors++
 				continue
 			}
-			_ = handle.WritePacketData(b)
+			if err := handle.WritePacketData(b); err != nil {
+				stats.WriteErrors++
+				continue
+			}
+			stats.Written++
 		}
 	}
+	return stats
 }
 
 // captureResponses 在窗口内抓包并按响应推导各端口状态。
 // 匹配依据：响应 TCP.DstPort == 我们的 srcPort，且响应 TCP.SrcPort == 被扫端口。
 func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, srcPort uint16, ports []int, mode Mode, window time.Duration) map[int]Result {
+	results, _ := captureResponsesWithStats(ctx, handle, targetIP, srcPort, ports, mode, window)
+	return results
+}
+
+func captureResponsesWithStats(ctx context.Context, handle linkLayer, targetIP net.IP, srcPort uint16, ports []int, mode Mode, window time.Duration) (map[int]Result, rawCaptureStats) {
 	results := make(map[int]Result, len(ports))
+	stats := rawCaptureStats{}
 	portSet := make(map[int]struct{}, len(ports))
 	for _, p := range ports {
 		results[p] = Result{Port: p, State: Timeout}
@@ -158,8 +202,10 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 			time.Sleep(time.Millisecond)
 			continue
 		}
+		stats.FramesRead++
 		packet := gopacket.NewPacket(data, handle.LinkType(), gopacket.NoCopy)
 		if perr := packet.ErrorLayer(); perr != nil {
+			stats.DecodeErrors++
 			if debug && !loggedDecodeError {
 				log.Printf("tcpscan: raw debug decode failed link_type=%T bytes=%d: %v", handle.LinkType(), len(data), perr.Error())
 				loggedDecodeError = true
@@ -170,17 +216,30 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 		if layer := packet.Layer(layers.LayerTypeTCP); layer != nil {
 			tcp := layer.(*layers.TCP)
 			if tcp.DstPort == layers.TCPPort(srcPort) {
+				stats.TCPToSourcePort++
+				ipLayer := packet.Layer(layers.LayerTypeIPv4)
+				if ipLayer == nil || !ipLayer.(*layers.IPv4).SrcIP.Equal(targetIP) {
+					stats.TCPForeignSource++
+					continue
+				}
 				if debug {
-					var source, destination net.IP
-					if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
-						ip := ipLayer.(*layers.IPv4)
-						source, destination = ip.SrcIP, ip.DstIP
-					}
+					ip := ipLayer.(*layers.IPv4)
+					source, destination := ip.SrcIP, ip.DstIP
 					log.Printf("tcpscan: raw debug TCP src=%s:%d dst=%s:%d flags=%#x", source, tcp.SrcPort, destination, tcp.DstPort, tcpFlagBits(tcp))
 				}
 				if dport := int(tcp.SrcPort); dport != 0 {
 					if _, ok := portSet[dport]; ok {
-						results[dport] = Result{Port: dport, State: classify(tcpFlagBits(tcp), false, mode)}
+						flags := tcpFlagBits(tcp)
+						stats.TCPMatchedPort++
+						if flags&tcpSYN != 0 && flags&tcpACK != 0 {
+							stats.SYNACK++
+						}
+						if flags&tcpRST != 0 {
+							stats.RST++
+						}
+						results[dport] = Result{Port: dport, State: classify(flags, false, mode)}
+					} else {
+						stats.TCPUnmatchedPort++
 					}
 				}
 			}
@@ -189,9 +248,13 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 		if layer := packet.Layer(layers.LayerTypeICMPv4); layer != nil {
 			icmp := layer.(*layers.ICMPv4)
 			if icmpUnreachable(icmp) {
+				stats.ICMPUnreachable++
 				if dport, ok := icmpOriginalDstPort(icmp); ok {
 					if _, ok := portSet[dport]; ok {
+						stats.ICMPMatchedPort++
 						results[dport] = Result{Port: dport, State: classify(0, true, mode)}
+					} else {
+						stats.ICMPUnmatchedPort++
 					}
 				}
 			}
@@ -211,7 +274,22 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 			results[p] = Result{Port: p, State: Filtered}
 		}
 	}
-	return results
+	return results, stats
+}
+
+func countStates(results map[int]Result) map[State]int {
+	counts := make(map[State]int)
+	for _, result := range results {
+		counts[result.State]++
+	}
+	return counts
+}
+
+func traceValue(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // buildProbe 构造一个 IPv4+TCP 探测帧（已含 Ethernet 头，便于 pcap 直发）。
