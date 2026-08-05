@@ -107,11 +107,14 @@ const navItems = [
 
 const breadcrumbs = computed(() => {
   const p = route.path
+  if (p.startsWith('/assets/') && p.endsWith('/aggregate')) return ['首页', '资产检索', 'IP 聚合']
   const map = { '/assets': '资产检索', '/tasks': '任务管理', '/vulns': '漏洞管理', '/blacklist': '黑名单', '/audit': '审计日志', '/settings': '系统设置' }
   return map[p] ? ['首页', map[p]] : ['首页']
 })
 
-function isActive(path) { return route.path === path }
+function isActive(path) {
+  return route.path === path || (path === '/assets' && route.path.startsWith('/assets/'))
+}
 
 async function doLogout() {
   await api.logout().catch(() => {})

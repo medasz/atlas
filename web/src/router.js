@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import Login from './views/Login.vue'
 import Layout from './views/Layout.vue'
 import Assets from './views/Assets.vue'
+import IPAggregate from './views/IPAggregate.vue'
 import Tasks from './views/Tasks.vue'
 import Blacklist from './views/Blacklist.vue'
 import Settings from './views/Settings.vue'
@@ -16,6 +17,7 @@ const routes = [
     children: [
       { path: '', redirect: '/assets' },
       { path: 'assets', component: Assets },
+      { path: 'assets/:ip/aggregate', component: IPAggregate, props: true },
       { path: 'tasks', component: Tasks },
       { path: 'vulns', component: Vulns },
       { path: 'blacklist', component: Blacklist },
