@@ -28,6 +28,14 @@ export const api = {
       '&page=' + page + '&page_size=' + pageSize + (aggregated ? '&aggregated=true' : '')),
   getHost: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip)),
   getHostDetail: (ip) => request('GET', '/api/hosts/' + encodeURIComponent(ip) + '/detail'),
+  deleteAsset: ({ ip, port, domain }) => {
+    const params = new URLSearchParams()
+    if (ip) params.set('ip', ip)
+    if (port) params.set('port', String(port))
+    if (domain) params.set('domain', domain)
+    return request('DELETE', '/api/assets?' + params.toString())
+  },
+  deleteHostAssets: (ip) => request('DELETE', '/api/hosts/' + encodeURIComponent(ip)),
   listTasks: () => request('GET', '/api/tasks'),
   getTask: (id) => request('GET', '/api/tasks/' + encodeURIComponent(id)),
   createTask: (payload) => request('POST', '/api/tasks', payload),

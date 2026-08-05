@@ -22,4 +22,8 @@ func TestSetScanConfigHotUpdate(t *testing.T) {
 	if got := sc.liveScanCfg().RawIface; got != "eth0" {
 		t.Errorf("热更新后网卡应为 eth0, 实际 %s", got)
 	}
+	snapshot := sc.ScanConfigSnapshot()
+	if snapshot.DefaultMode != "syn" || snapshot.RawIface != "eth0" {
+		t.Errorf("snapshot = %+v, want mode=syn iface=eth0", snapshot)
+	}
 }

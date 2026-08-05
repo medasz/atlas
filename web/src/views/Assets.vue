@@ -102,12 +102,26 @@
             <span class="ipv6-badge" :class="{ on: row.is_ipv6 }">{{ row.is_ipv6 ? 'v6' : 'v4' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="" width="80" align="center">
+        <el-table-column label="" width="92" align="center" fixed="right">
           <template #default="{ row }">
-            <button v-if="row.ip" class="detail-trigger" @click="openHost(row.ip)">
-              <span>详情</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
-            </button>
+            <div class="row-actions">
+              <button v-if="row.ip" class="detail-trigger" :title="detailButtonTitle(row)" :aria-label="detailButtonTitle(row)" @click="openAssetDetail(row)">
+                <span>详情</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
+              </button>
+              <button
+                class="delete-trigger"
+                :disabled="deletingKey === assetKey(row)"
+                :title="deleteTitle(row)"
+                :aria-label="deleteTitle(row)"
+                @click="confirmDeleteAsset(row)"
+              >
+                <el-icon :class="{ 'is-loading': deletingKey === assetKey(row) }">
+                  <Loading v-if="deletingKey === assetKey(row)" />
+                  <DeleteIcon v-else />
+                </el-icon>
+              </button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -130,13 +144,13 @@
     <!-- 主机详情对话框 -->
     <el-dialog v-model="hostVisible" width="800px" class="host-dialog">
       <template #header>
-        <DialogHeader title="主机详情" :icon="icons.host" />
+        <DialogHeader :title="dialogTitle" :icon="icons.host" />
       </template>
       <template v-if="detail">
-        <DetailGrid :items="hostItems" />
+        <DetailGrid :items="detailItems" />
 
-        <SectionLabel label="漏洞" :count="(detail.vulns || []).length" />
-        <el-table v-if="detail.vulns && detail.vulns.length" :data="detail.vulns" size="small" stripe class="sub-table">
+        <SectionLabel label="漏洞" :count="detailVulns.length" />
+        <el-table v-if="detailVulns.length" :data="detailVulns" size="small" stripe class="sub-table">
           <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
           <el-table-column prop="cve" label="CVE" width="150" />
           <el-table-column label="严重等级" width="96" align="center">
@@ -155,6 +169,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { Delete as DeleteIcon, Loading } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import DialogHeader from '../components/DialogHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
@@ -173,8 +189,10 @@ const items = ref([])
 const loading = ref(false)
 const hostVisible = ref(false)
 const detail = ref(null)
+const selectedAsset = ref(null)
 const syntaxOpen = ref(false)
 const isAggregated = ref(false)
+const deletingKey = ref('')
 
 // 分页状态
 const page = ref(1)
@@ -183,10 +201,36 @@ const total = ref(0)
 
 const hasDomain = computed(() => items.value.some(r => !r.ip && (r.domain || r.name || r.registrable_domain)))
 
-const hostItems = computed(() => {
+const dialogTitle = computed(() => selectedAsset.value?.port ? '端口详情' : '主机详情')
+
+const detailVulns = computed(() => {
+  const vulns = detail.value?.vulns || []
+  const selected = selectedAsset.value
+  if (!selected?.port) return vulns
+  const assetRef = `${selected.ip}:${selected.port}`
+  return vulns.filter(v => v.asset_ref === assetRef)
+})
+
+const detailItems = computed(() => {
   if (!detail.value || !detail.value.host) return []
   const h = detail.value.host
   const ports = detail.value.ports || []
+  const selected = selectedAsset.value
+
+  if (selected?.port) {
+    const port = ports.find(p => Number(p.port) === Number(selected.port)) || selected
+    return [
+      { key: 'IP', value: port.ip || selected.ip },
+      { key: '端口', value: port.port || selected.port, highlight: true },
+      { key: '协议', value: port.proto || '-' },
+      { key: '状态', value: portStatusText(port) },
+      { key: '服务', value: port.service || '-' },
+      { key: '版本', value: port.version || '-' },
+      { key: '标题', value: port.title || '-' },
+      { key: 'Web 服务', value: (port.webinfo && port.webinfo.server) || port.server || '-' },
+      { key: 'Banner', value: port.banner || '-', mono: true, multiline: true }
+    ]
+  }
 
   // 汇总主机及端口下的技术栈/指纹
   const techSet = new Set()
@@ -195,15 +239,20 @@ const hostItems = computed(() => {
   ports.forEach(p => {
     techList(p).forEach(t => t && techSet.add(t))
   })
-  const techStr = techSet.size > 0 ? Array.from(techSet).join(', ') : '—'
+  const techStr = techSet.size > 0 ? Array.from(techSet).join(', ') : '-'
+  const bannerStr = ports
+    .filter(p => p.banner)
+    .map(p => `${p.port}: ${p.banner}`)
+    .join('\n') || '-'
 
   return [
     { key: 'IP', value: h.ip },
     { key: 'IPv6', value: h.is_ipv6 ? '是' : '否' },
     { key: '所属组织', value: h.org || '—' },
     { key: 'ASN', value: h.asn ? h.asn : '—' },
-    { key: '操作系统', value: h.os || '—' },
+    { key: '操作系统', value: h.os || '-' },
     { key: '技术栈 / 指纹', value: techStr },
+    { key: 'Banner', value: bannerStr, mono: true, multiline: true },
     { key: '开放端口', value: Array.isArray(h.open_ports) ? h.open_ports.length : (ports.length || (h.port ? 1 : 0)), highlight: true }
   ]
 })
@@ -304,10 +353,67 @@ function portStatusTone(row) {
   }
 }
 
-async function openHost(ip) {
-  const r = await api.getHostDetail(ip)
+function detailButtonTitle(row) {
+  return row.port ? '查看端口详情' : '查看主机详情'
+}
+
+async function openAssetDetail(row) {
+  const r = await api.getHostDetail(row.ip)
+  selectedAsset.value = row
   detail.value = r
   hostVisible.value = true
+}
+
+function assetKey(row) {
+  if (row.aggregated || (row.ip && !row.port)) return `host:${row.ip}`
+  if (row.ip && row.port) return `port:${row.ip}:${row.port}`
+  return `domain:${row.domain || row.name || row.registrable_domain || ''}`
+}
+
+function deleteTitle(row) {
+  return row.aggregated || (row.ip && !row.port) ? '删除主机及全部端口资产' : '删除资产'
+}
+
+async function confirmDeleteAsset(row) {
+  const hostDelete = row.aggregated || (row.ip && !row.port)
+  const domain = row.domain || row.name || row.registrable_domain || ''
+  const target = hostDelete
+    ? `主机 ${row.ip} 及其全部端口资产`
+    : row.ip && row.port
+      ? `端口资产 ${row.ip}:${row.port}`
+      : `域名资产 ${domain}`
+
+  try {
+    await ElMessageBox.confirm(
+      `确定删除${target}吗？此操作不会删除历史扫描任务。`,
+      '删除资产',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'confirm-danger' }
+    )
+  } catch {
+    return
+  }
+
+  const key = assetKey(row)
+  deletingKey.value = key
+  try {
+    if (hostDelete) {
+      await api.deleteHostAssets(row.ip)
+    } else {
+      await api.deleteAsset({ ip: row.ip, port: row.port, domain: row.ip ? '' : domain })
+    }
+    if (hostVisible.value && detail.value?.host?.ip === row.ip) {
+      hostVisible.value = false
+      detail.value = null
+      selectedAsset.value = null
+    }
+    if (items.value.length === 1 && page.value > 1) page.value--
+    await doSearch(false)
+    ElMessage.success('资产已删除')
+  } catch (err) {
+    ElMessage.error(`删除失败：${err.message}`)
+  } finally {
+    deletingKey.value = ''
+  }
 }
 
 onMounted(() => doSearch(true))
@@ -463,14 +569,26 @@ onMounted(() => doSearch(true))
 .ipv6-badge.on { color: var(--accent-green); background: rgba(0,230,118,0.08); border-color: rgba(0,230,118,0.2); }
 
 .detail-trigger {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 10px; background: transparent; border: 1px solid var(--border-subtle);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; background: transparent; border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm); color: var(--text-muted);
-  font-family: var(--font-heading); font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
   cursor: pointer; transition: all 0.2s ease;
 }
+.detail-trigger span { display: none; }
 .detail-trigger svg { width: 12px; height: 12px; }
 .detail-trigger:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.06); }
+
+.row-actions { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 62px; }
+.delete-trigger {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  background: transparent; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; transition: all 0.2s ease;
+}
+.delete-trigger .el-icon { width: 14px; height: 14px; font-size: 14px; }
+.delete-trigger:hover:not(:disabled) {
+  color: var(--accent-red); border-color: rgba(255,71,87,0.45); background: rgba(255,71,87,0.08);
+}
+.delete-trigger:disabled { cursor: wait; opacity: 0.65; }
 
 /* ===== 主机详情对话框 ===== */
 .host-dialog :deep(.el-dialog) { border: 1px solid var(--border-subtle); }

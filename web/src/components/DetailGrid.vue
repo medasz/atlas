@@ -5,7 +5,7 @@
       <span class="detail-key">{{ it.key }}</span>
       <!-- 允许通过 #value 插槽自定义某些单元格（如内嵌状态标签） -->
       <slot name="value" :item="it" :index="i">
-        <span class="detail-val" :class="{ mono: it.mono, highlight: it.highlight }">{{ it.value }}</span>
+        <span class="detail-val" :class="{ mono: it.mono, highlight: it.highlight, multiline: it.multiline }">{{ it.value }}</span>
       </slot>
     </div>
   </div>
@@ -42,6 +42,7 @@ defineProps({
   word-break: break-all;
 }
 .detail-val.mono { font-size: 11px; }
+.detail-val.multiline { white-space: pre-wrap; max-height: 120px; overflow: auto; overflow-wrap: anywhere; }
 .detail-val.highlight { color: var(--accent-cyan); font-size: 22px; font-weight: 600; }
 
 /* 小屏：单列堆叠 */

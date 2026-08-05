@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"net"
 
+	"atlas/internal/logger"
+	"atlas/internal/queue"
+	"atlas/internal/scan"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -76,7 +80,8 @@ func (s *Server) updateConfig(c *gin.Context) {
 		return
 	}
 
-	cfg := s.deps.Cfg
+	next := *s.deps.Cfg
+	cfg := &next
 	if p.Scan.DefaultMode != "" {
 		cfg.Scan.DefaultMode = p.Scan.DefaultMode
 	}
@@ -91,14 +96,9 @@ func (s *Server) updateConfig(c *gin.Context) {
 	}
 	// raw_iface 恒等更新（空字符串表示自动选出口网卡，可经界面重置）
 	cfg.Scan.RawIface = p.Scan.RawIface
+	cfg.Audit.Enabled = p.Audit.Enabled
 
 	// 运行时热更新：审计开关 + 限速器 + 扫描配置（模式/网卡，无需重启即对新建任务生效）
-	s.deps.Audit.SetEnabled(p.Audit.Enabled)
-	s.deps.Rate.SetLimits(cfg.Scan.MaxConcurrency, cfg.Scan.PerTargetRPS)
-	if s.deps.Scanner != nil {
-		s.deps.Scanner.SetScanConfig(cfg.Scan)
-	}
-
 	// 内存已生效（审计开关/限速/SetScanConfig 热更新见上）。
 	// 持久化到 DB；失败仅告警，不阻断内存生效。
 	ctx := c.Request.Context()
@@ -129,6 +129,23 @@ func (s *Server) updateConfig(c *gin.Context) {
 	if err := s.deps.Store.UpsertConfigSection(ctx, "audit", string(auditJSON)); err != nil {
 		c.JSON(200, gin.H{"warning": "audit 配置未持久化: " + err.Error()})
 		return
+	}
+	*s.deps.Cfg = *cfg
+	s.deps.Audit.SetEnabled(cfg.Audit.Enabled)
+	s.deps.Rate.SetLimits(cfg.Scan.MaxConcurrency, cfg.Scan.PerTargetRPS)
+	if s.deps.Scanner != nil {
+		s.deps.Scanner.SetScanConfig(cfg.Scan)
+		if ports, err := scan.ParsePortSpec(cfg.Scan.DefaultPortRange); err == nil && len(ports) > 0 {
+			s.deps.Scanner.SetDefaultPorts(ports)
+			if s.deps.Task != nil {
+				s.deps.Task.SetScanDefaults(ports, cfg.Scan.PortChunkSize)
+			}
+		}
+	}
+	if s.deps.Queue != nil {
+		if err := s.deps.Queue.Publish(queue.SubjectConfigChanged, struct{}{}); err != nil {
+			logger.Info("config broadcast failed", "error", err)
+		}
 	}
 	c.JSON(200, gin.H{"ok": true})
 }

@@ -188,3 +188,41 @@ func TestESUpdateAsset_ErrorReasonExposed(t *testing.T) {
 		t.Errorf("expected error message to retain status and id, got: %s", errMsg)
 	}
 }
+
+func TestESDeleteByQuery(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/assets/_delete_by_query" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("refresh") != "true" || r.URL.Query().Get("conflicts") != "proceed" {
+			t.Errorf("missing delete query options: %s", r.URL.RawQuery)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"deleted":3}`))
+	}))
+	defer srv.Close()
+
+	es := NewES(srv.URL, "assets")
+	deleted, err := es.DeleteByQuery(context.Background(), map[string]any{"term": map[string]any{"ip": "1.2.3.4"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Fatalf("expected 3 deleted documents, got %d", deleted)
+	}
+	wrapper, ok := captured["query"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing query wrapper: %#v", captured)
+	}
+	term, _ := wrapper["term"].(map[string]any)
+	if term["ip"] != "1.2.3.4" {
+		t.Fatalf("unexpected query: %#v", captured)
+	}
+}

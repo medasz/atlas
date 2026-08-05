@@ -22,15 +22,28 @@ type AuditLog struct {
 
 // Task 扫描/漏洞任务
 type Task struct {
-	ID        string         `json:"id"`
-	Kind      string         `json:"kind"` // scan | vuln
-	Scope     map[string]any `json:"scope"`
-	Schedule  map[string]any `json:"schedule"`
-	RateLimit map[string]any `json:"rate_limit"`
-	Status    int            `json:"status"` // 0 pending 1 running 2 done 3 paused 4 failed
-	Progress  map[string]int `json:"progress"`
-	Error     string         `json:"error,omitempty"` // 失败原因
-	CreatedAt time.Time      `json:"created_at"`
+	ID         string             `json:"id"`
+	Kind       string             `json:"kind"` // scan | vuln
+	Scope      map[string]any     `json:"scope"`
+	ScanConfig ScanConfigSnapshot `json:"scan_config"`
+	Schedule   map[string]any     `json:"schedule"`
+	RateLimit  map[string]any     `json:"rate_limit"`
+	Status     int                `json:"status"` // 0 pending 1 running 2 done 3 paused 4 failed
+	Progress   map[string]int     `json:"progress"`
+	Error      string             `json:"error,omitempty"` // 失败原因
+	CreatedAt  time.Time          `json:"created_at"`
+}
+
+// ScanConfigSnapshot records the probe behavior chosen when a scan task is created.
+// Rate limits deliberately remain live operational controls rather than task state.
+type ScanConfigSnapshot struct {
+	DefaultMode         string `json:"default_mode"`
+	RawCaptureWindowSec int    `json:"raw_capture_window_sec"`
+	RawRetries          int    `json:"raw_retries"`
+	RecordFilteredPorts bool   `json:"record_filtered_ports"`
+	RecordClosedPorts   bool   `json:"record_closed_ports"`
+	InstallRstDrop      bool   `json:"install_rst_drop"`
+	RawIface            string `json:"raw_iface"`
 }
 
 // Vuln 漏洞结果
@@ -49,23 +62,23 @@ type Vuln struct {
 
 // TaskItem 任务子项（断点续扫单元，粒度可细化到端口块）
 type TaskItem struct {
-	TaskID    string         `json:"task_id"`
-	Target    string         `json:"target"`
-	Ports     string         `json:"ports"`     // 端口块规格，如 "1-1000"；域名/空块为 ""
-	Status    int            `json:"status"`    // 0 pending 1 processing 2 done 3 filtered 4 failed
-	Result    map[string]any `json:"result"`
-	Error     string         `json:"error,omitempty"`
-	Attempts  int            `json:"attempts,omitempty"`
-	LeaseUntil *time.Time    `json:"lease_until,omitempty"`
+	TaskID     string         `json:"task_id"`
+	Target     string         `json:"target"`
+	Ports      string         `json:"ports"`  // 端口块规格，如 "1-1000"；域名/空块为 ""
+	Status     int            `json:"status"` // 0 pending 1 processing 2 done 3 filtered 4 failed
+	Result     map[string]any `json:"result"`
+	Error      string         `json:"error,omitempty"`
+	Attempts   int            `json:"attempts,omitempty"`
+	LeaseUntil *time.Time     `json:"lease_until,omitempty"`
 }
 
 // Task status 常量
 const (
-	TaskPending     = 0
-	TaskRunning     = 1
-	TaskDone        = 2
-	TaskPaused      = 3
-	TaskFailed      = 4
+	TaskPending        = 0
+	TaskRunning        = 1
+	TaskDone           = 2
+	TaskPaused         = 3
+	TaskFailed         = 4
 	TaskItemPending    = 0
 	TaskItemProcessing = 1
 	TaskItemDone       = 2

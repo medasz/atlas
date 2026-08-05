@@ -5,7 +5,9 @@ package tcpscan
 import (
 	"context"
 	"net"
+	"os"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -59,5 +61,36 @@ func TestIntegrationRawSynLocalhost(t *testing.T) {
 	}
 	if res[port].State != Open {
 		t.Errorf("raw SYN 扫描端口 %d 期望 open, 实际 %s", port, res[port].State)
+	}
+}
+
+// TestIntegrationRawSynTarget is opt-in so CI never probes external targets.
+// It is used to verify the real raw packet path from a deployment environment.
+func TestIntegrationRawSynTarget(t *testing.T) {
+	target := os.Getenv("ATLAS_RAW_TEST_TARGET")
+	if target == "" {
+		t.Skip("set ATLAS_RAW_TEST_TARGET to run a real raw SYN probe")
+	}
+	port := 22
+	if value := os.Getenv("ATLAS_RAW_TEST_PORT"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 65535 {
+			t.Fatalf("invalid ATLAS_RAW_TEST_PORT %q", value)
+		}
+		port = parsed
+	}
+
+	scanner, err := New(ModeSyn, Options{Timeout: 3 * time.Second, Retries: 1, InstallRstDrop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := scanner.Scan(context.Background(), target, []int{port}, Options{
+		Timeout: 3 * time.Second, Retries: 1, InstallRstDrop: true,
+	})
+	if err != nil {
+		t.Fatalf("raw SYN scan failed: %v", err)
+	}
+	if got := results[port].State; got != Open {
+		t.Fatalf("raw SYN scan %s:%d = %s, want open", target, port, got)
 	}
 }

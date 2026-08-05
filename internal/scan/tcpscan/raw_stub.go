@@ -20,7 +20,7 @@ func openHandle(iface string, opts Options) (linkLayer, error) {
 	return nil, fmt.Errorf("raw capture 未启用（构建时未加 -tags raw_capture）")
 }
 
-func resolveMAC(handle linkLayer, iface string, srcIP, dstIP net.IP) (net.HardwareAddr, error) {
+func resolveMAC(handle linkLayer, iface string, srcIP, nextHop net.IP) (net.HardwareAddr, error) {
 	return nil, fmt.Errorf("ARP 解析不可用（raw_capture 构建外）")
 }
 

@@ -25,6 +25,16 @@ func (s *ESAssetStore) Upsert(ctx context.Context, a model.Asset) error {
 	return s.es.UpdateAsset(ctx, model.AssetID(a), doc)
 }
 
+// Delete removes one concrete port or domain document.
+func (s *ESAssetStore) Delete(ctx context.Context, a model.Asset) error {
+	return s.es.Delete(ctx, model.AssetID(a))
+}
+
+// DeleteHost removes every asset document associated with an IP.
+func (s *ESAssetStore) DeleteHost(ctx context.Context, ip string) (int64, error) {
+	return s.es.DeleteByQuery(ctx, map[string]any{"term": map[string]any{"ip": ip}})
+}
+
 // assetToDoc 将统一 Asset 转为 ES 文档；跳过零值以减小体积
 func assetToDoc(a model.Asset) map[string]any {
 	m := map[string]any{}
