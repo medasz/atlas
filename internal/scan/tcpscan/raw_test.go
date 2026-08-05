@@ -20,12 +20,12 @@ func (mockTimeout) Timeout() bool { return true }
 type mockHandle struct {
 	packets [][]byte
 	idx     int
-	link    gopacket.LayerType
+	link    gopacket.Decoder
 }
 
-func (m *mockHandle) WritePacketData(b []byte) error        { return nil }
-func (m *mockHandle) LinkType() gopacket.LayerType          { return m.link }
-func (m *mockHandle) Close()                                 {}
+func (m *mockHandle) WritePacketData(b []byte) error { return nil }
+func (m *mockHandle) LinkType() gopacket.Decoder     { return m.link }
+func (m *mockHandle) Close()                         {}
 func (m *mockHandle) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
 	if m.idx >= len(m.packets) {
 		return nil, gopacket.CaptureInfo{}, mockTimeout{}
@@ -77,7 +77,7 @@ func TestCaptureResponsesSyn(t *testing.T) {
 		makeResp(testMAC, testMAC, target, net.ParseIP("10.0.0.1"), uint16(80), srcPort, tcpSYN|tcpACK),
 		makeResp(testMAC, testMAC, target, net.ParseIP("10.0.0.1"), uint16(81), srcPort, tcpRST),
 	}
-	h := &mockHandle{packets: pkts, link: layers.LayerTypeEthernet}
+	h := &mockHandle{packets: pkts, link: layers.LinkTypeEthernet}
 	res := captureResponses(context.Background(), h, target, srcPort, []int{80, 81, 82}, ModeSyn, 150*time.Millisecond)
 	if res[80].State != Open {
 		t.Errorf("端口80 期望 open, 实际 %s", res[80].State)
@@ -94,7 +94,7 @@ func TestCaptureResponsesFinNoReply(t *testing.T) {
 	target := net.ParseIP("10.0.0.5")
 	srcPort := uint16(40000)
 	// 完全无响应：FIN 模式应判 open|filtered
-	h := &mockHandle{packets: nil, link: layers.LayerTypeEthernet}
+	h := &mockHandle{packets: nil, link: layers.LinkTypeEthernet}
 	res := captureResponses(context.Background(), h, target, srcPort, []int{80}, ModeFin, 120*time.Millisecond)
 	if res[80].State != OpenFiltered {
 		t.Errorf("FIN 无响应期望 open|filtered, 实际 %s", res[80].State)
@@ -104,7 +104,7 @@ func TestCaptureResponsesFinNoReply(t *testing.T) {
 func TestCaptureResponsesAckNoReply(t *testing.T) {
 	target := net.ParseIP("10.0.0.5")
 	srcPort := uint16(40000)
-	h := &mockHandle{packets: nil, link: layers.LayerTypeEthernet}
+	h := &mockHandle{packets: nil, link: layers.LinkTypeEthernet}
 	res := captureResponses(context.Background(), h, target, srcPort, []int{80}, ModeAck, 120*time.Millisecond)
 	if res[80].State != Filtered {
 		t.Errorf("ACK 无响应期望 filtered, 实际 %s", res[80].State)
@@ -119,7 +119,7 @@ func TestCaptureResponsesICMPFiltered(t *testing.T) {
 	orig := makeRespNoEth(gw, target, srcPort, uint16(80), tcpSYN)
 	// ICMP 不可达由 target 发回（SrcIP=target, DstIP=gw）
 	pkt := makeICMPUnreach(testMAC, testMAC, target, gw, orig)
-	h := &mockHandle{packets: [][]byte{pkt}, link: layers.LayerTypeEthernet}
+	h := &mockHandle{packets: [][]byte{pkt}, link: layers.LinkTypeEthernet}
 	res := captureResponses(context.Background(), h, target, srcPort, []int{80, 81}, ModeSyn, 150*time.Millisecond)
 	if res[80].State != Filtered {
 		t.Errorf("端口80 收到 ICMP 不可达期望 filtered, 实际 %s", res[80].State)

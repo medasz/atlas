@@ -53,8 +53,10 @@ type Service struct {
 	scanProc      Processor
 	vulnProc      Processor
 	concurrency   int
+	defaultsMu    sync.RWMutex
 	defaultPorts  []int
 	portChunkSize int
+	scanSnapshot  func() model.ScanConfigSnapshot
 }
 
 // New 构造任务服务
@@ -67,6 +69,24 @@ func New(s *store.Store, q *queue.Queue, a *audit.Auditor, bl *blacklist.Service
 
 // SetProcessor 注入资产扫描处理器（Issue #4）
 func (svc *Service) SetProcessor(p Processor) { svc.scanProc = p }
+
+// SetScanConfigSnapshotter supplies the current probe configuration for newly
+// created scan tasks. The stored snapshot keeps all task items on one mode.
+func (svc *Service) SetScanConfigSnapshotter(snapshot func() model.ScanConfigSnapshot) {
+	svc.scanSnapshot = snapshot
+}
+
+// SetScanDefaults updates defaults used only while creating future tasks.
+func (svc *Service) SetScanDefaults(defaultPorts []int, portChunkSize int) {
+	if portChunkSize <= 0 {
+		portChunkSize = 1000
+	}
+	ports := append([]int(nil), defaultPorts...)
+	svc.defaultsMu.Lock()
+	svc.defaultPorts = ports
+	svc.portChunkSize = portChunkSize
+	svc.defaultsMu.Unlock()
+}
 
 // SetVulnProcessor 注入漏洞检测处理器（Issue #10~#13）
 func (svc *Service) SetVulnProcessor(p Processor) { svc.vulnProc = p }
@@ -86,6 +106,9 @@ func (svc *Service) Create(ctx context.Context, operator, kind string, sc, sched
 		return "", err
 	}
 	id := newID()
+	svc.defaultsMu.RLock()
+	portChunkSize := svc.portChunkSize
+	svc.defaultsMu.RUnlock()
 	type itemSpec struct {
 		target   string
 		ports    string
@@ -100,7 +123,7 @@ func (svc *Service) Create(ctx context.Context, operator, kind string, sc, sched
 		var chunks []string
 		if net.ParseIP(t) != nil {
 			if plist := svc.portsForScope(sc); len(plist) > 0 {
-				chunks = chunkSpec(plist, svc.portChunkSize)
+				chunks = chunkSpec(plist, portChunkSize)
 			}
 		}
 		if len(chunks) == 0 {
@@ -119,6 +142,9 @@ func (svc *Service) Create(ctx context.Context, operator, kind string, sc, sched
 		RateLimit: rateLimit,
 		Status:    model.TaskRunning,
 		Progress:  map[string]int{"total": len(specs), "done": 0},
+	}
+	if kind == model.TaskScan && svc.scanSnapshot != nil {
+		task.ScanConfig = svc.scanSnapshot()
 	}
 	if err := svc.store.CreateTask(ctx, task); err != nil {
 		return "", err
@@ -199,16 +225,16 @@ func (svc *Service) runInProcess(ctx context.Context, taskID string) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for it := range ch {
-					cur, e := svc.store.GetTask(ctx, task.ID)
-					if e == nil && cur.Status == model.TaskPaused {
-						continue
-					}
-					svc.processOne(ctx, cur, it.Target, it.Ports)
+		go func() {
+			defer wg.Done()
+			for it := range ch {
+				cur, e := svc.store.GetTask(ctx, task.ID)
+				if e == nil && cur.Status == model.TaskPaused {
+					continue
 				}
-			}()
+				svc.processOne(ctx, cur, it.Target, it.Ports)
+			}
+		}()
 	}
 	wg.Wait()
 }
@@ -251,6 +277,10 @@ func (svc *Service) processOne(ctx context.Context, task model.Task, target, por
 	if err := svc.rate.WaitGlobal(ctx); err != nil {
 		return
 	}
+	if task.Kind == model.TaskScan {
+		logger.Info("scan task item configuration", "task_id", task.ID, "target", target, "port_range", ports, "mode", task.ScanConfig.DefaultMode)
+		logger.Info("开始执行扫描任务项", "task_id", task.ID, "target", target, "port_range", ports)
+	}
 	proc := svc.processorFor(task.Kind)
 	res, err := proc.Process(ctx, task, target, ports)
 	if err != nil {
@@ -286,7 +316,9 @@ func (svc *Service) portsForScope(sc map[string]any) []int {
 			return ps
 		}
 	}
-	return svc.defaultPorts
+	svc.defaultsMu.RLock()
+	defer svc.defaultsMu.RUnlock()
+	return append([]int(nil), svc.defaultPorts...)
 }
 
 // chunkSpec 将端口切片按 size 切块，返回可被 ParsePortSpec 精确还原的规格字符串：

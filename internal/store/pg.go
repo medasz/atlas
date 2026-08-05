@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -256,33 +257,95 @@ func (s *Store) ListVulnsByHost(ctx context.Context, ip string) ([]model.Vuln, e
 	return out, rows.Err()
 }
 
+// DeleteHostMetadata removes relational data owned by a deleted host asset.
+// Audit logs and scan tasks are retained as operational records.
+func (s *Store) DeleteHostMetadata(ctx context.Context, ip string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM vulns WHERE asset_ref=$1 OR asset_ref LIKE $2`, ip, ip+":%"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM asset_history WHERE ip=$1`, ip); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM ip_survivals WHERE ip=$1`, ip); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteVulnsByAsset removes vulnerability results tied exactly to one asset.
+func (s *Store) DeleteVulnsByAsset(ctx context.Context, assetRef string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM vulns WHERE asset_ref=$1`, assetRef)
+	return err
+}
+
+// DeletePortMetadata removes relational data for one port and reconciles the host summary.
+func (s *Store) DeletePortMetadata(ctx context.Context, ip string, port, remainingOpen int, removeHost bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	assetRef := ip + ":" + strconv.Itoa(port)
+	if _, err := tx.Exec(ctx, `DELETE FROM vulns WHERE asset_ref=$1`, assetRef); err != nil {
+		return err
+	}
+	if removeHost {
+		if _, err := tx.Exec(ctx, `DELETE FROM vulns WHERE asset_ref=$1 OR asset_ref LIKE $2`, ip, ip+":%"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM asset_history WHERE ip=$1`, ip); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM ip_survivals WHERE ip=$1`, ip); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `DELETE FROM asset_history WHERE ip=$1 AND port=$2`, ip, port); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ip_survivals SET open_ports=$2 WHERE ip=$1`, ip, remainingOpen); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // CreateTask 持久化任务
 func (s *Store) CreateTask(ctx context.Context, t model.Task) error {
 	scope, _ := json.Marshal(t.Scope)
 	sched, _ := json.Marshal(t.Schedule)
 	rl, _ := json.Marshal(t.RateLimit)
+	scanCfg, _ := json.Marshal(t.ScanConfig)
 	prog, _ := json.Marshal(t.Progress)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO tasks (id, kind, scope, schedule, rate_limit, status, progress)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		t.ID, t.Kind, scope, sched, rl, t.Status, prog)
+		INSERT INTO tasks (id, kind, scope, schedule, rate_limit, scan_config, status, progress)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		t.ID, t.Kind, scope, sched, rl, scanCfg, t.Status, prog)
 	return err
 }
 
 // GetTask 按 ID 读取任务
 func (s *Store) GetTask(ctx context.Context, id string) (model.Task, error) {
 	var t model.Task
-	var scope, sched, rl, prog []byte
+	var scope, sched, rl, scanCfg, prog []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, kind, scope, schedule, rate_limit, status, progress, created_at
+		SELECT id, kind, scope, schedule, rate_limit, scan_config, status, progress, created_at
 		FROM tasks WHERE id=$1`, id).
-		Scan(&t.ID, &t.Kind, &scope, &sched, &rl, &t.Status, &prog, &t.CreatedAt)
+		Scan(&t.ID, &t.Kind, &scope, &sched, &rl, &scanCfg, &t.Status, &prog, &t.CreatedAt)
 	if err != nil {
 		return t, err
 	}
 	_ = json.Unmarshal(scope, &t.Scope)
 	_ = json.Unmarshal(sched, &t.Schedule)
 	_ = json.Unmarshal(rl, &t.RateLimit)
+	_ = json.Unmarshal(scanCfg, &t.ScanConfig)
 	_ = json.Unmarshal(prog, &t.Progress)
 	return t, nil
 }
@@ -290,7 +353,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (model.Task, error) {
 // ListTasks 列出全部任务（倒序）
 func (s *Store) ListTasks(ctx context.Context) ([]model.Task, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, kind, scope, schedule, rate_limit, status, progress, created_at
+		SELECT id, kind, scope, schedule, rate_limit, scan_config, status, progress, created_at
 		FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -299,13 +362,14 @@ func (s *Store) ListTasks(ctx context.Context) ([]model.Task, error) {
 	out := []model.Task{}
 	for rows.Next() {
 		var t model.Task
-		var scope, sched, rl, prog []byte
-		if err := rows.Scan(&t.ID, &t.Kind, &scope, &sched, &rl, &t.Status, &prog, &t.CreatedAt); err != nil {
+		var scope, sched, rl, scanCfg, prog []byte
+		if err := rows.Scan(&t.ID, &t.Kind, &scope, &sched, &rl, &scanCfg, &t.Status, &prog, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(scope, &t.Scope)
 		_ = json.Unmarshal(sched, &t.Schedule)
 		_ = json.Unmarshal(rl, &t.RateLimit)
+		_ = json.Unmarshal(scanCfg, &t.ScanConfig)
 		_ = json.Unmarshal(prog, &t.Progress)
 		out = append(out, t)
 	}
@@ -486,4 +550,3 @@ func (s *Store) UpsertIPLifecycle(ctx context.Context, ip string, isV6 bool, ope
 	}
 	return nil
 }
-

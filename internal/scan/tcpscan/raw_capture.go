@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -21,11 +22,11 @@ import (
 const pcapReadTimeout = 200 * time.Millisecond
 
 // pcapLink 适配 *pcap.Handle 以满足 linkLayer 接口。
-// 关键：pcap.Handle.LinkType() 返回 layers.LayerType，而接口要求 gopacket.LayerType，
-// 二者为不同 Go 类型，故在适配层做一次转换。
+// pcap.Handle.LinkType() itself implements gopacket.Decoder. Keep that
+// decoder intact: converting a DLT to a LayerType loses its Decode method.
 type pcapLink struct{ *pcap.Handle }
 
-func (p pcapLink) LinkType() gopacket.LayerType { return gopacket.LayerType(p.Handle.LinkType()) }
+func (p pcapLink) LinkType() gopacket.Decoder { return p.Handle.LinkType() }
 
 func defaultIface(dst net.IP) (string, net.IP, error) {
 	devs, err := pcap.FindAllDevs()
@@ -50,12 +51,15 @@ func openHandle(iface string, opts Options) (linkLayer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开抓包句柄 %s 失败: %w", iface, err)
 	}
+	if os.Getenv("ATLAS_RAW_DEBUG") == "1" {
+		fmt.Printf("tcpscan: raw debug opened iface=%s pcap_link_type=%v decoder=%T\n", iface, handle.LinkType(), handle.LinkType())
+	}
 	return pcapLink{handle}, nil
 }
 
-// resolveMAC 通过 ARP 请求/响应解析目标 MAC（同广播域）。
-// 若目标经网关，应解析网关 MAC；此处简化为直接解析目标 IP（同子网场景）。
-func resolveMAC(handle linkLayer, iface string, srcIP, dstIP net.IP) (net.HardwareAddr, error) {
+// resolveMAC resolves the layer-2 next-hop MAC. The next hop is the target on
+// a directly connected route, or the gateway for a routed target.
+func resolveMAC(handle linkLayer, iface string, srcIP, nextHop net.IP) (net.HardwareAddr, error) {
 	ifaceObj, err := net.InterfaceByName(iface)
 	if err != nil {
 		return nil, fmt.Errorf("获取网卡 %s 信息失败: %w", iface, err)
@@ -74,7 +78,7 @@ func resolveMAC(handle linkLayer, iface string, srcIP, dstIP net.IP) (net.Hardwa
 		SourceHwAddress:   src,
 		SourceProtAddress: srcIP.To4(),
 		DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
-		DstProtAddress:    dstIP.To4(),
+		DstProtAddress:    nextHop.To4(),
 	}
 	buf := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, eth, arp); err != nil {
@@ -100,12 +104,12 @@ func resolveMAC(handle linkLayer, iface string, srcIP, dstIP net.IP) (net.Hardwa
 		for _, lt := range decoded {
 			if lt == layers.LayerTypeARP &&
 				arp.Operation == layers.ARPReply &&
-				net.IP.Equal(arp.SourceProtAddress, dstIP.To4()) {
+				net.IP.Equal(arp.SourceProtAddress, nextHop.To4()) {
 				return net.HardwareAddr(arp.SourceHwAddress), nil
 			}
 		}
 	}
-	return nil, fmt.Errorf("ARP 超时未收到 %s 的回复", dstIP)
+	return nil, fmt.Errorf("ARP timeout waiting for %s", nextHop)
 }
 
 // installRstDrop best-effort 安装「丢弃出站 RST」规则，规避内核对我们发出的

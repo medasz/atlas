@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"os"
 	"time"
 
 	"github.com/google/gopacket"
@@ -19,7 +20,7 @@ import (
 type linkLayer interface {
 	WritePacketData([]byte) error
 	ReadPacketData() ([]byte, gopacket.CaptureInfo, error)
-	LinkType() gopacket.LayerType
+	LinkType() gopacket.Decoder
 	Close()
 }
 
@@ -61,19 +62,26 @@ func (r rawScanner) Scan(ctx context.Context, target string, ports []int, opts O
 		return nil, errRawUnavailable{err}
 	}
 
-	ifaceName, autoSrc, err := defaultIface(dstIP)
+	route, err := resolveRawRoute(dstIP, opts.Iface)
 	if err != nil {
 		if opts.OnRawFallback != nil {
 			opts.OnRawFallback(err)
 		}
 		return nil, errRawUnavailable{err}
 	}
-	srcIP := autoSrc
+	srcIP := route.SourceIP
 	if opts.SourceIP != nil {
-		srcIP = opts.SourceIP
+		srcIP = opts.SourceIP.To4()
+		if srcIP == nil {
+			err := fmt.Errorf("raw scan source IP must be IPv4: %s", opts.SourceIP)
+			if opts.OnRawFallback != nil {
+				opts.OnRawFallback(err)
+			}
+			return nil, errRawUnavailable{err}
+		}
 	}
 
-	handle, err := openHandle(ifaceName, opts)
+	handle, err := openHandle(route.Iface, opts)
 	if err != nil {
 		if opts.OnRawFallback != nil {
 			opts.OnRawFallback(err)
@@ -82,15 +90,25 @@ func (r rawScanner) Scan(ctx context.Context, target string, ports []int, opts O
 	}
 	defer handle.Close()
 
-	srcMAC := ifaceMAC(ifaceName)
-	dstMAC, err := resolveMAC(handle, ifaceName, srcIP, dstIP)
+	srcMAC := ifaceMAC(route.Iface)
+	if len(srcMAC) == 0 {
+		err := fmt.Errorf("interface %s has no hardware address", route.Iface)
+		if opts.OnRawFallback != nil {
+			opts.OnRawFallback(err)
+		}
+		return nil, errRawUnavailable{err}
+	}
+	dstMAC, err := resolveMAC(handle, route.Iface, srcIP, route.NextHop)
 	if err != nil {
-		// ARP 失败不致命：仅记 warn，发送仍尝试（同广播域可能无需 ARP）。
-		log.Printf("tcpscan: ARP 解析 %s 失败（继续尝试）: %v", target, err)
+		err = fmt.Errorf("resolve next-hop MAC %s for target %s: %w", route.NextHop, target, err)
+		if opts.OnRawFallback != nil {
+			opts.OnRawFallback(err)
+		}
+		return nil, errRawUnavailable{err}
 	}
 
 	if opts.InstallRstDrop {
-		if cleanup, rerr := installRstDrop(ctx, target, ifaceName); rerr != nil {
+		if cleanup, rerr := installRstDrop(ctx, target, route.Iface); rerr != nil {
 			log.Printf("tcpscan: 安装 RST-drop 规则失败（仅影响 stealth，不影响正确性）: %v", rerr)
 		} else if cleanup != nil {
 			defer cleanup()
@@ -131,12 +149,8 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 	}
 
 	deadline := time.Now().Add(window)
-	var eth layers.Ethernet
-	var ip4 layers.IPv4
-	var tcp layers.TCP
-	var icmp layers.ICMPv4
-	parser := gopacket.NewDecodingLayerParser(handle.LinkType(), &eth, &ip4, &tcp, &icmp, &gopacket.Payload{})
-	decoded := make([]gopacket.LayerType, 0, 4)
+	debug := os.Getenv("ATLAS_RAW_DEBUG") == "1"
+	loggedDecodeError := false
 
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		data, _, err := handle.ReadPacketData()
@@ -144,26 +158,40 @@ func captureResponses(ctx context.Context, handle linkLayer, targetIP net.IP, sr
 			time.Sleep(time.Millisecond)
 			continue
 		}
-		decoded = decoded[:0]
-		if perr := parser.DecodeLayers(data, &decoded); perr != nil {
+		packet := gopacket.NewPacket(data, handle.LinkType(), gopacket.NoCopy)
+		if perr := packet.ErrorLayer(); perr != nil {
+			if debug && !loggedDecodeError {
+				log.Printf("tcpscan: raw debug decode failed link_type=%T bytes=%d: %v", handle.LinkType(), len(data), perr.Error())
+				loggedDecodeError = true
+			}
 			continue
 		}
-		for _, lt := range decoded {
-			switch lt {
-			case layers.LayerTypeTCP:
-				if tcp.DstPort == layers.TCPPort(srcPort) {
-					if dport := int(tcp.SrcPort); dport != 0 {
-						if _, ok := portSet[dport]; ok {
-							results[dport] = Result{Port: dport, State: classify(tcpFlagBits(&tcp), false, mode)}
-						}
+
+		if layer := packet.Layer(layers.LayerTypeTCP); layer != nil {
+			tcp := layer.(*layers.TCP)
+			if tcp.DstPort == layers.TCPPort(srcPort) {
+				if debug {
+					var source, destination net.IP
+					if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
+						ip := ipLayer.(*layers.IPv4)
+						source, destination = ip.SrcIP, ip.DstIP
+					}
+					log.Printf("tcpscan: raw debug TCP src=%s:%d dst=%s:%d flags=%#x", source, tcp.SrcPort, destination, tcp.DstPort, tcpFlagBits(tcp))
+				}
+				if dport := int(tcp.SrcPort); dport != 0 {
+					if _, ok := portSet[dport]; ok {
+						results[dport] = Result{Port: dport, State: classify(tcpFlagBits(tcp), false, mode)}
 					}
 				}
-			case layers.LayerTypeICMPv4:
-				if icmpUnreachable(&icmp) {
-					if dport, ok := icmpOriginalDstPort(&icmp); ok {
-						if _, ok := portSet[dport]; ok {
-							results[dport] = Result{Port: dport, State: classify(0, true, mode)}
-						}
+			}
+		}
+
+		if layer := packet.Layer(layers.LayerTypeICMPv4); layer != nil {
+			icmp := layer.(*layers.ICMPv4)
+			if icmpUnreachable(icmp) {
+				if dport, ok := icmpOriginalDstPort(icmp); ok {
+					if _, ok := portSet[dport]; ok {
+						results[dport] = Result{Port: dport, State: classify(0, true, mode)}
 					}
 				}
 			}
@@ -195,11 +223,11 @@ func buildProbe(srcIP net.IP, srcMAC, dstMAC net.HardwareAddr, srcPort uint16, d
 	}
 	ip := &layers.IPv4{
 		Version:  4,
-		IHL:       5,
-		TTL:       64,
-		Protocol:  layers.IPProtocolTCP,
-		SrcIP:     srcIP,
-		DstIP:     dstIP,
+		IHL:      5,
+		TTL:      64,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    srcIP,
+		DstIP:    dstIP,
 	}
 	tcp := &layers.TCP{
 		SrcPort: layers.TCPPort(srcPort),

@@ -28,3 +28,12 @@
 @media (max-width: 768px) {
   .el-dialog { width: 92vw !important; max-width: 92vw; }
 }
+
+.el-message-box .confirm-danger {
+  --el-button-bg-color: var(--accent-red);
+  --el-button-border-color: var(--accent-red);
+  --el-button-hover-bg-color: #ff6673;
+  --el-button-hover-border-color: #ff6673;
+  --el-button-active-bg-color: #db3544;
+  --el-button-active-border-color: #db3544;
+}

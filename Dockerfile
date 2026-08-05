@@ -24,7 +24,7 @@ RUN npm run build
 # ---- 运行镜像 1: 纯 Go 后端测绘引擎 (backend) ----
 FROM debian:bookworm-slim AS backend
 ENV TZ=Asia/Shanghai
-RUN apt-get update && apt-get install -y ca-certificates libpcap0.8 tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates libpcap0.8 tzdata iptables iproute2 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=gobuild /out/atlas /app/atlas
 COPY configs /app/configs

@@ -43,7 +43,18 @@ func (q *Queue) SubscribeQueue(subject, queueGroup string, handler func(data []b
 	return q.conn.QueueSubscribe(subject, queueGroup, func(m *nats.Msg) {
 		handler(m.Data)
 		if m.Reply != "" {
-			m.Respond(nil)
+			_ = m.Respond(nil)
+		}
+	})
+}
+
+// Subscribe delivers each notification to every instance. It is used for
+// configuration invalidation, never for distributed task work.
+func (q *Queue) Subscribe(subject string, handler func(data []byte)) (*nats.Subscription, error) {
+	return q.conn.Subscribe(subject, func(m *nats.Msg) {
+		handler(m.Data)
+		if m.Reply != "" {
+			_ = m.Respond(nil)
 		}
 	})
 }
@@ -53,6 +64,7 @@ func (q *Queue) Close() { q.conn.Close() }
 
 // Subjects 任务主题常量
 const (
-	SubjectScan = "atlas.scan"
-	SubjectVuln = "atlas.vuln"
+	SubjectScan          = "atlas.scan"
+	SubjectVuln          = "atlas.vuln"
+	SubjectConfigChanged = "atlas.config.changed"
 )

@@ -240,7 +240,7 @@ func (e *ESClient) Get(ctx context.Context, id string) (map[string]any, error) {
 // Delete 按 _id 删除文档（忽略 404）
 func (e *ESClient) Delete(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		fmt.Sprintf("%s/%s/_doc/%s", e.addr, e.index, id), nil)
+		fmt.Sprintf("%s/%s/_doc/%s?refresh=wait_for", e.addr, e.index, id), nil)
 	if err != nil {
 		return err
 	}
@@ -253,6 +253,36 @@ func (e *ESClient) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("es delete status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// DeleteByQuery deletes all documents matching a structured Elasticsearch query.
+func (e *ESClient) DeleteByQuery(ctx context.Context, query map[string]any) (int64, error) {
+	body, err := json.Marshal(map[string]any{"query": query})
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/%s/_delete_by_query?conflicts=proceed&refresh=true", e.addr, e.index), bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, fmt.Errorf("es delete by query status %d: %s", resp.StatusCode, string(respBody))
+	}
+	var out struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.Deleted, nil
 }
 
 // Count 返回索引文档总数

@@ -232,8 +232,11 @@ ES 不可用时自动回退到 PostgreSQL 的 `ILIKE` / 布尔 / 数值比较查
 | POST | `/api/login` | 登录（口令）→ 设置会话 Cookie |
 | POST | `/api/logout` | 登出 |
 | GET | `/api/assets?q=&type=` | Dork 检索资产（host/port/domain） |
+| DELETE | `/api/assets?ip=<ip>&port=<port>` | 删除指定端口资产及其关联历史、漏洞记录 |
+| DELETE | `/api/assets?domain=<domain>` | 删除指定域名资产及其关联漏洞记录 |
 | GET | `/api/hosts/:ip` | 主机资产详情 |
 | GET | `/api/hosts/:ip/detail` | 主机详情：主机 + 全部端口（含指纹）+ 关联漏洞 |
+| DELETE | `/api/hosts/:ip` | 删除主机及其全部端口资产和关联元数据 |
 | GET | `/api/tasks` | 任务列表 |
 | POST | `/api/tasks` | 创建任务（`kind`: scan/vuln，含 scope/schedule/rate_limit） |
 | GET | `/api/tasks/:id` | 任务详情（含子项） |

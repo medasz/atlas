@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"atlas/internal/audit"
 	"atlas/internal/blacklist"
@@ -102,10 +103,7 @@ func main() {
 	bl := blacklist.New(st, auditor)
 
 	// 默认端口列表（供任务按块建子项使用）
-	var defaultPorts []int
-	if ps, perr := scan.ParsePortSpec(cfg.Scan.DefaultPortRange); perr == nil && len(ps) > 0 {
-		defaultPorts = ps
-	}
+	defaultPorts := defaultPortsFor(cfg.Scan.DefaultPortRange)
 
 	// 任务调度服务（默认占位处理器，Issue #4 注入真实探测）
 	taskSvc := task.New(st, q, auditor, bl, limiter, cfg.Scan.MaxConcurrency, defaultPorts, cfg.Scan.PortChunkSize)
@@ -114,7 +112,7 @@ func main() {
 	scanner := scan.New(assetStore, limiter, defaultPorts, fp, cfg.Scan)
 	scanner.SetStore(st)
 	taskSvc.SetProcessor(scanner)
-
+	taskSvc.SetScanConfigSnapshotter(scanner.ScanConfigSnapshot)
 
 	// 漏洞检测引擎（Issue #10~#13）：加载目录模板 + 已持久化模板
 	vulnEngine, err := vuln.New(st, limiter, *templatesDir)
@@ -134,20 +132,31 @@ func main() {
 	if err := taskSvc.RegisterWorker(); err != nil {
 		log.Fatalf("register worker: %v", err)
 	}
+	if q != nil {
+		if _, err := q.Subscribe(queue.SubjectConfigChanged, func(_ []byte) {
+			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer reloadCancel()
+			if err := reloadRuntimeConfig(reloadCtx, boot, st, cfg, scanner, taskSvc, limiter, auditor); err != nil {
+				logger.Info("config reload failed", "error", err)
+			}
+		}); err != nil {
+			log.Fatalf("subscribe config changes: %v", err)
+		}
+	}
 
 	srv := server.New(server.Deps{
-		Cfg:        cfg,
-		Store:      st,
-		Asset:      assetStore,
-		Queue:      q,
-		Audit:      auditor,
-		Rate:       limiter,
-		Blacklist:  bl,
-		Task:       taskSvc,
-		Scanner:    scanner,
+		Cfg:         cfg,
+		Store:       st,
+		Asset:       assetStore,
+		Queue:       q,
+		Audit:       auditor,
+		Rate:        limiter,
+		Blacklist:   bl,
+		Task:        taskSvc,
+		Scanner:     scanner,
 		Fingerprint: fp,
-		Vuln:       vulnEngine,
-		WebDir:     *webDir,
+		Vuln:        vulnEngine,
+		WebDir:      *webDir,
 	})
 
 	go func() {
@@ -173,4 +182,28 @@ func main() {
 			return
 		}
 	}
+}
+
+func reloadRuntimeConfig(ctx context.Context, boot *config.Bootstrap, st *store.Store, cfg *config.Config, scanner *scan.Scanner, taskSvc *task.Service, limiter *ratelimit.Limiter, auditor *audit.Auditor) error {
+	loaded, err := config.LoadFromDB(ctx, config.NewPoolDB(st.Pool()), boot)
+	if err != nil {
+		return err
+	}
+	*cfg = *loaded
+	defaultPorts := defaultPortsFor(cfg.Scan.DefaultPortRange)
+	scanner.SetScanConfig(cfg.Scan)
+	scanner.SetDefaultPorts(defaultPorts)
+	taskSvc.SetScanDefaults(defaultPorts, cfg.Scan.PortChunkSize)
+	limiter.SetLimits(cfg.Scan.MaxConcurrency, cfg.Scan.PerTargetRPS)
+	auditor.SetEnabled(cfg.Audit.Enabled)
+	logger.Info("configuration reloaded", "scan_mode", cfg.Scan.DefaultMode, "raw_iface", cfg.Scan.RawIface)
+	return nil
+}
+
+func defaultPortsFor(spec string) []int {
+	ports, err := scan.ParsePortSpec(spec)
+	if err != nil || len(ports) == 0 {
+		return nil
+	}
+	return ports
 }

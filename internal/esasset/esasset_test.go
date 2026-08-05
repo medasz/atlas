@@ -53,7 +53,7 @@ func TestGetHost(t *testing.T) {
 // TestSearchAssets 验证 SearchAssets 透传 ES 结果并正确分页
 func TestSearchAssets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"ip":"1.2.3.4","port":22}}]}}`))
+		w.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_source":{"ip":"1.2.3.4","port":22,"banner":"SSH-2.0-OpenSSH_9.6"}}]}}`))
 	}))
 	defer srv.Close()
 
@@ -62,7 +62,7 @@ func TestSearchAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Total != 1 || len(res.Items) != 1 {
+	if res.Total != 1 || len(res.Items) != 1 || res.Items[0]["banner"] != "SSH-2.0-OpenSSH_9.6" {
 		t.Fatalf("bad result: %+v", res)
 	}
 }

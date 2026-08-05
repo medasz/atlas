@@ -38,8 +38,9 @@ type Scanner struct {
 	// scanCfg 为运行时可热更新的扫描配置（模式/网卡/raw 参数）。
 	// 通过 SetScanConfig 由配置 API 推送更新，scanHost 执行时实时读取，
 	// 因此界面改模式/网卡无需重启即对新建任务生效。
-	mu      sync.RWMutex
-	scanCfg config.ScanConfig
+	mu             sync.RWMutex
+	scanCfg        config.ScanConfig
+	defaultPortsMu sync.RWMutex
 }
 
 // New 构造扫描器（fp 可为 nil，nil 时不做技术指纹识别）。
@@ -80,6 +81,13 @@ func (sc *Scanner) SetScanConfig(cfg config.ScanConfig) {
 	sc.mu.Unlock()
 }
 
+// SetDefaultPorts updates only the fallback used for future domain probes.
+func (sc *Scanner) SetDefaultPorts(ports []int) {
+	sc.defaultPortsMu.Lock()
+	sc.defaultPorts = append([]int(nil), ports...)
+	sc.defaultPortsMu.Unlock()
+}
+
 // liveScanCfg 读取当前生效的扫描配置（受 RWMutex 保护，避免与 SetScanConfig 竞争）。
 func (sc *Scanner) liveScanCfg() config.ScanConfig {
 	sc.mu.RLock()
@@ -87,6 +95,20 @@ func (sc *Scanner) liveScanCfg() config.ScanConfig {
 	return sc.scanCfg
 }
 
+// ScanConfigSnapshot returns a coherent copy of the current probe settings for
+// assignment to a newly created task.
+func (sc *Scanner) ScanConfigSnapshot() model.ScanConfigSnapshot {
+	cfg := sc.liveScanCfg()
+	return model.ScanConfigSnapshot{
+		DefaultMode:         cfg.DefaultMode,
+		RawCaptureWindowSec: cfg.RawCaptureWindowSec,
+		RawRetries:          cfg.RawRetries,
+		RecordFilteredPorts: cfg.RecordFilteredPorts,
+		RecordClosedPorts:   cfg.RecordClosedPorts,
+		InstallRstDrop:      cfg.InstallRstDrop,
+		RawIface:            cfg.RawIface,
+	}
+}
 
 // Process 实现 task.Processor：根据目标类型分派
 func (sc *Scanner) Process(ctx context.Context, task model.Task, target, ports string) (map[string]any, error) {
@@ -100,7 +122,7 @@ func (sc *Scanner) Process(ctx context.Context, task model.Task, target, ports s
 		plist = sc.portsFor(task)
 	}
 	if net.ParseIP(target) != nil {
-		return sc.scanHost(ctx, target, plist)
+		return sc.scanHost(ctx, target, plist, task.ScanConfig)
 	}
 	return sc.scanDomain(ctx, target, plist)
 }
@@ -111,16 +133,18 @@ func (sc *Scanner) portsFor(task model.Task) []int {
 			return ps
 		}
 	}
-	return sc.defaultPorts
+	sc.defaultPortsMu.RLock()
+	defer sc.defaultPortsMu.RUnlock()
+	return append([]int(nil), sc.defaultPorts...)
 }
 
 // scanHost 对 IP 目标做 TCP 端口扫描 + 服务/HTTP 探测。
 // 按配置模式分派：raw 模式（SYN/ACK/FIN/Null/Xmas）整块广发 + 窗口抓包；
 // connect 模式逐端口 goroutine 全连接（保留原限速 + panic 安全网）。
 // raw 抓包不可用时自动降级为 connect。
-func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int) (map[string]any, error) {
-	// 实时读取扫描配置：运行时通过 SetScanConfig 热更新后，此处立即生效（无需重启）。
-	live := sc.liveScanCfg()
+func (sc *Scanner) scanHost(ctx context.Context, ip string, ports []int, probe model.ScanConfigSnapshot) (map[string]any, error) {
+	// Probe behavior is fixed by the task snapshot, not live configuration.
+	live := probe
 	isV6 := isIPv6(ip)
 	recordFiltered := live.RecordFilteredPorts
 	recordClosed := live.RecordClosedPorts
@@ -261,7 +285,6 @@ func (sc *Scanner) finishHost(ctx context.Context, ip string, isV6 bool, openPor
 	return map[string]any{"ip": ip, "open_ports": openPorts, "count": len(openPorts)}, nil
 }
 
-
 // shouldPersist 依据配置决定某端口状态是否落库：
 //   - open 始终落库（确认的开放端口）；
 //   - filtered / open|filtered / unfiltered 受 RecordFilteredPorts 控制（默认 true），
@@ -285,14 +308,14 @@ func (sc *Scanner) persistResult(ctx context.Context, ip string, p int, r tcpsca
 		return
 	}
 	portAsset := model.Asset{
-		IP:      ip,
-		Port:    p,
-		Proto:   "tcp",
-		State:   string(r.State),
-		Service: guessService(p, r.Banner),
-		Banner:  r.Banner,
-		Host:    ip,
-		IsIPv6:  isV6,
+		IP:        ip,
+		Port:      p,
+		Proto:     "tcp",
+		State:     string(r.State),
+		Service:   guessService(p, r.Banner),
+		Banner:    r.Banner,
+		Host:      ip,
+		IsIPv6:    isV6,
 		FirstSeen: time.Now(),
 		LastSeen:  time.Now(),
 	}
@@ -374,13 +397,13 @@ func (sc *Scanner) scanDomain(ctx context.Context, domain string, ports []int) (
 			webinfo["tech"] = sc.fp.Detect(hr.Header, hr.Body, "")
 		}
 		portAsset := model.Asset{
-			IP:      domain,
-			Port:    p,
-			Proto:   "tcp",
-			Service: "http",
-			Title:   hr.Title,
-			Host:    domain,
-			WebInfo: webinfo,
+			IP:        domain,
+			Port:      p,
+			Proto:     "tcp",
+			Service:   "http",
+			Title:     hr.Title,
+			Host:      domain,
+			WebInfo:   webinfo,
 			FirstSeen: time.Now(),
 			LastSeen:  time.Now(),
 		}
