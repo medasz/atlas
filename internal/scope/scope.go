@@ -2,17 +2,13 @@ package scope
 
 import (
 	"fmt"
-	"math/rand"
 	"net"
 	"strings"
-	"time"
 )
 
-// maxExpand 单次 CIDR 展开上限，避免超大网段撑爆任务表
-const maxExpand = 1 << 16
-
-// Expand 将任务 scope 展开为待扫描目标列表，支持 ip / cidr / domain
-func Expand(scope map[string]any) ([]string, error) {
+// BuildIterator 根据任务 Scope 构建统一的伪随机流式目标迭代器。
+// 支持单个 IP、小网段、/16 与 /8 等任意规模 CIDR 网段以及域名目标的流式混合处理。
+func BuildIterator(scope map[string]any) (TargetIterator, error) {
 	raw, ok := scope["targets"]
 	if !ok {
 		return nil, fmt.Errorf("scope.targets required")
@@ -21,89 +17,81 @@ func Expand(scope map[string]any) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("scope.targets must be a list")
 	}
-	out := []string{}
+
+	var iterators []TargetIterator
 	seen := map[string]bool{}
+
+	var domainSlice []string
+
 	for _, item := range list {
 		s, _ := item.(string)
 		s = strings.TrimSpace(s)
-		if s == "" {
+		if s == "" || seen[s] {
 			continue
 		}
-		for _, t := range expandOne(s) {
-			if !seen[t] {
-				seen[t] = true
-				out = append(out, t)
-			}
+		seen[s] = true
+
+		if _, ipNet, err := net.ParseCIDR(s); err == nil {
+			iterators = append(iterators, NewCyclicCIDRIterator(ipNet, 0, 0, 1))
+			continue
 		}
+
+		if ip := net.ParseIP(s); ip != nil {
+			maskBits := 32
+			if ip.To4() == nil {
+				maskBits = 128
+			}
+			ipNet := &net.IPNet{
+				IP:   ip,
+				Mask: net.CIDRMask(maskBits, maskBits),
+			}
+			iterators = append(iterators, NewCyclicCIDRIterator(ipNet, 0, 0, 1))
+			continue
+		}
+
+		// 域名或包含端口的目标，归入 SliceIterator 集中处理
+		domainSlice = append(domainSlice, s)
 	}
-	return ShuffleIPs(out), nil
+
+	if len(domainSlice) > 0 {
+		iterators = append(iterators, NewSliceIterator(domainSlice, 0))
+	}
+
+	if len(iterators) == 0 {
+		return NewSliceIterator(nil, 0), nil
+	}
+
+	if len(iterators) == 1 {
+		return iterators[0], nil
+	}
+
+	return NewMultiIterator(iterators...), nil
 }
 
-// ShuffleIPs 对目标列表进行 Fisher-Yates 随机打散，交错发包网段
+// Expand 将任务 scope 展开为待扫描目标列表（基于全新的 TargetIterator 流式离散生成）。
+func Expand(scope map[string]any) ([]string, error) {
+	it, err := BuildIterator(scope)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, it.Total())
+	for {
+		target, ok := it.Next()
+		if !ok {
+			break
+		}
+		out = append(out, target)
+	}
+	return out, nil
+}
+
+// ShuffleIPs 保持接口兼容性（内部已有 CyclicGroup 离散化打散，若有显式切片调用可直接返回或做二次微调）
 func ShuffleIPs(ips []string) []string {
 	if len(ips) <= 1 {
 		return ips
 	}
 	out := make([]string, len(ips))
 	copy(out, ips)
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for i := len(out) - 1; i > 0; i-- {
-		j := r.Intn(i + 1)
-		out[i], out[j] = out[j], out[i]
-	}
 	return out
-}
-
-func expandOne(s string) []string {
-	if _, ipNet, err := net.ParseCIDR(s); err == nil {
-		ips, err := expandCIDR(ipNet)
-		if err != nil {
-			return []string{s}
-		}
-		return ips
-	}
-	// 域名（含端口后缀如 example.com:8443）按原值保留
-	if net.ParseIP(s) == nil && !strings.Contains(s, "/") {
-		return []string{s}
-	}
-	// 单个 IP
-	if net.ParseIP(s) != nil {
-		return []string{s}
-	}
-	return []string{s}
-}
-
-func expandCIDR(ipNet *net.IPNet) ([]string, error) {
-	var ips []string
-	for ip := ipNet.IP.Mask(ipNet.Mask); ipNet.Contains(ip); incIP(ip) {
-		addr := ip.String()
-		if isNetworkOrBroadcast(ipNet, ip) {
-			continue
-		}
-		ips = append(ips, addr)
-		if len(ips) > maxExpand {
-			return nil, fmt.Errorf("cidr %s exceeds expand limit %d", ipNet.String(), maxExpand)
-		}
-	}
-	return ips, nil
-}
-
-func incIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
-		}
-	}
-}
-
-func isNetworkOrBroadcast(ipNet *net.IPNet, ip net.IP) bool {
-	if ip.Equal(ipNet.IP) {
-		return true
-	}
-	broadcast := make(net.IP, len(ip))
-	for i := range ip {
-		broadcast[i] = ip[i] | ^ipNet.Mask[i]
-	}
-	return ip.Equal(broadcast)
 }
